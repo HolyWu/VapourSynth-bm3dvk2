@@ -1,0 +1,30 @@
+[build-system]
+requires = ["meson-python>=0.18.0", "VapourSynth>=81"]
+build-backend = "mesonpy"
+
+[project]
+name = "vapoursynth-bm3dvk2"
+description = "Block-Matching and 3D filtering, using Vulkan compute"
+readme = "README.md"
+requires-python = ">=3.12"
+keywords = ["vapoursynth", "bm3d", "vulkan"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Plugins",
+  "Natural Language :: English",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX",
+  "Operating System :: Unix",
+  "Programming Language :: C++",
+  "Topic :: Multimedia :: Video",
+]
+dependencies = ["VapourSynth>=81"]
+dynamic = ["license", "license-files", "version"]
+
+[project.urls]
+Repository = "https://github.com/HolyWu/VapourSynth-bm3dvk2"
+Issues = "https://github.com/HolyWu/VapourSynth-bm3dvk2/issues"
+
+[tool.meson-python.args]
+install = ["--tags=runtime"]
