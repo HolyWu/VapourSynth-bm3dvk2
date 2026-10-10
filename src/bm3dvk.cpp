@@ -89,6 +89,7 @@ constexpr double filterTileGain = 10.0;   // least ratio of estimates accumulate
 constexpr int64_t filterTileWorkgroups = 3; // least workgroups per SM a tile may leave where more would run without it
 constexpr int64_t filterTileWorkgroupsBasic = 2; // the same for basic estimates, without a reference group (measured)
 constexpr uint32_t preferredSubgroupSize = 32;
+constexpr uint32_t vendorNvidia = 0x10DE;
 constexpr int64_t globalGroupBudget = int64_t{512} << 20;
 constexpr int64_t matchBudget = int64_t{256} << 20;
 constexpr uint32_t maxBindings = 7;
@@ -201,6 +202,7 @@ struct Gpu {
     const VSVULKANAPI* vkapi{};
     const VSVulkanFunctions* vk{};
     VSVulkanCoreHandles handles{};
+    uint32_t vendorId{};
     bool fp16Math{};
     bool floatAtomics{};
     uint32_t subgroupSize{};
@@ -244,6 +246,7 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
         fail("the device cannot pin the subgroup size of compute shaders");
 
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
+    gpu.vendorId = props.properties.vendorID;
     gpu.fp16Math = features12.shaderFloat16 == VK_TRUE;
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
     gpu.subgroupSize = std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize);
@@ -741,8 +744,10 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         fail("too many search candidates, decrease \"bm_range\", \"ps_range\" or \"ps_num\"");
     const int64_t exactCandidates = exactCandidatesOf(plan.psCols, plan.psRows);
     // Spatial windows no wider than a subgroup are register bound: a reference in shared memory frees the registers their
-    // selection network needs (measured).
-    plan.bmRefInRegs = p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
+    // selection network needs (measured). Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers;
+    // RADV indexes it through branch ladders and AMD's Windows compiler through scratch memory, both far slower than
+    // shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
+    plan.bmRefInRegs = gpu.vendorId == vendorNvidia && p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
     const auto bmShared = [&](int subgroups, int64_t chunk, bool singleChunk) {
         const int64_t perSubgroup = (plan.bmRefInRegs ? 0 : int64_t{p.blockSize} * divCeil(p.blockSize, 4) * 4 * sizeof(float)) +
                                     int64_t{plan.bmWindows} * 4 * sizeof(uint32_t) + chunk * sizeof(uint32_t) +
