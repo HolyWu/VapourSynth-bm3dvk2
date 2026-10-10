@@ -1829,7 +1829,7 @@ void VS_CC filterCreate(const VSMap* in, VSMap* out, void*, VSCore* core, const 
         }
 
         const Params params = parseParams(ArgReader{*in, *vsapi}, vi, refNode != nullptr);
-        if (vi.format.colorFamily == cfGray && params.sigma[0] == 0.0) {
+        if (std::ranges::all_of(std::span{params.sigma}.first(vi.format.numPlanes), [](double s) { return s == 0.0; })) {
             vsapi->mapConsumeNode(out, "clip", node.release(), maAppend);
             return;
         }
