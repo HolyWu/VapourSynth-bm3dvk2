@@ -204,6 +204,23 @@ shared vec4 refBlock[NSG][BLOCK * REF_QUADS];
 #else
 #define ROW_UNROLL
 #endif
+// The window samples of row `row` an item reads: all at once in a loop of constant bounds (WHOLE_ROW_LOADS), or quad by
+// quad as the distance terms take them, which keeps NVIDIA's registers low. RADV unrolls neither a loop whose bounds vary
+// with the quad nor the loops around it, leaving v[] indexed at run time. Its sums then start from a zero it cannot fold:
+// from a literal 0.0 it starts a sum with a multiply, which ACO fuses into the next term instead, out of source order.
+#if WHOLE_ROW_LOADS
+#define LOAD_ROW(NX, STEP) \
+    [[unroll]] for (int i = 0; i < ((NX) - 1) * (STEP) + BLOCK; ++i) \
+        v[i] = WIN_SAMPLE(float(win.data[row + i]));
+#define LOAD_QUAD(q, NX, STEP)
+#define SUM_ZERO uintBitsToFloat(item >> 31)
+#else
+#define LOAD_ROW(NX, STEP)
+#define LOAD_QUAD(q, NX, STEP) \
+    [[unroll]] for (int i = q == 0 ? 0 : q * 4 + ((NX) - 1) * (STEP); i < min((q + 1) * 4 + ((NX) - 1) * (STEP), ((NX) - 1) * (STEP) + BLOCK); ++i) \
+        v[i] = WIN_SAMPLE(float(win.data[row + i]));
+#define SUM_ZERO 0.0
+#endif
 
 // The search windows of the current search as left, top, columns and rows.
 shared ivec4 searchWin[NSG][MAX_WINDOWS];
@@ -309,10 +326,10 @@ uint centerRows(ivec2 pos, int ny) {
     float v[((NX) - 1) * (STEP) + BLOCK]; \
     float energy[NX]; \
     [[unroll]] for (int x = 0; x < (NX); ++x) \
-        energy[x] = 0.0; \
+        energy[x] = SUM_ZERO; \
+    LOAD_ROW(NX, STEP) \
     [[unroll]] for (int q = 0; q < REF_QUADS; ++q) { \
-        [[unroll]] for (int i = q == 0 ? 0 : q * 4 + ((NX) - 1) * (STEP); i < min((q + 1) * 4 + ((NX) - 1) * (STEP), ((NX) - 1) * (STEP) + BLOCK); ++i) \
-            v[i] = WIN_SAMPLE(float(win.data[row + i])); \
+        LOAD_QUAD(q, NX, STEP) \
         [[unroll]] for (int x = 0; x < (NX); ++x) \
             [[unroll]] for (int c = 0; c < 4; ++c) \
                 if (q * 4 + c < BLOCK) \
@@ -348,7 +365,7 @@ void NAME(uint base, uint count, uint offset, ivec2 refPos) { \
         float d[ROWS][NX]; \
         [[unroll]] for (int k = 0; k < ROWS; ++k) \
             [[unroll]] for (int x = 0; x < (NX); ++x) \
-                d[k][x] = 0.0; \
+                d[k][x] = SUM_ZERO; \
         if (inside) { \
             ROW_UNROLL for (int r = 0; r < (ROWS - 1) * (STEP) + BLOCK; ++r) { \
                 const uint row = offset + uint(min(pos.y + r, HEIGHT - 1)) * WIDTH + uint(pos.x); \

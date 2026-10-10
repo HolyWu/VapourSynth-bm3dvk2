@@ -911,6 +911,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"PS_ROWS", std::to_string(plan.psRows)},
         {"PS_UNION", plan.psUnion ? "1" : "0"},
         {"REF_IN_REGS", plan.bmRefInRegs ? "1" : "0"},
+        {"WHOLE_ROW_LOADS", gpu.vendorId != vendorNvidia ? "1" : "0"},
         {"SSD_CORRELATION", plan.bmCorrelation ? "1" : "0"},
         {"CHUNK", std::to_string(plan.bmChunk)},
         {"SINGLE_CHUNK", plan.bmSingleChunk ? "1" : "0"},
