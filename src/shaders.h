@@ -1053,9 +1053,10 @@ void main() {
 }
 )glsl";
 
-// Collaborative filtering: one workgroup per group and plane. The group is held as T pairs of vertically adjacent samples, element (z, p, x) covering rows 2p
-// and 2p + 1 of column x of block z, so the row and column transforms run on two lines at once (the codelet z-pass too, unless Z_SCALAR). The z-pass function
-// zLine, specialized for the group sizes in use, is spliced in between the two halves.
+// Collaborative filtering: workgroups stride over the tiles of TILE_REFS x TILE_REFS reference blocks of the batch, filtering the group of each block in one
+// plane. The group is held as T pairs of vertically adjacent samples, element (z, p, x) covering rows 2p and 2p + 1 of column x of block z, so the row and
+// column transforms run on two lines at once (the codelet z-pass too, unless Z_SCALAR). The z-pass function zLine, specialized for the group sizes in use, is
+// spliced in between the two halves.
 inline constexpr std::string_view filterHead = R"glsl(
 layout(local_size_x = WG) in;
 
@@ -1148,8 +1149,8 @@ void accumulate(uint i, float v) {
 }
 
 // The numerator of the reference frame around the tile of reference blocks the workgroup processes, which holds every block the full search can match:
-// estimates accumulate here and reach memory in one pass per tile. Without ACC_TILE the tile would not fit into shared memory and every estimate goes to memory
-// directly.
+// estimates accumulate here and reach memory in one pass per tile. Without ACC_TILE, where the tile would not fit into shared memory or would not pay off (see
+// makePlan), every estimate goes to memory directly.
 // The tile holds fixed point sums of 26 fraction bits: integer atomics are native in shared memory, where float ones may be emulated. Values out of range go to
 // memory directly, and so does the 2^32 a wrapping addition loses. So do groups weighted below 2^16 units, which keeps the error rounding adds to an estimate
 // within 2^-17.
