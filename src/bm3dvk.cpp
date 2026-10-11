@@ -21,7 +21,6 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <bit>
 #include <cctype>
 #include <cmath>
-#include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -292,9 +291,8 @@ GpuBuffer createBuffer(const Gpu& gpu, VSCore* core, int64_t size) {
 enum class Profile { fast, lc, np, high, vn };
 
 struct Params {
-    Profile profile{Profile::fast};
     bool wiener{};
-    std::array<double, maxPlanes> sigma{10.0, 10.0, 10.0};
+    std::array<double, maxPlanes> sigma{};
     int radius{};
     int blockSize{};
     int blockStep{};
@@ -335,7 +333,7 @@ int defaultRadius(Profile profile) {
 
 // The profile defaults of BM3D_Para and, for temporal filtering, VBM3D_Para of the CPU implementation.
 Params profileDefaults(Profile profile, bool wiener, bool temporal) {
-    Params p{.profile = profile, .wiener = wiener, .blockSize = 8, .blockStep = wiener ? 3 : 4, .groupSize = wiener ? 32 : 16, .bmRange = 16,
+    Params p{.wiener = wiener, .blockSize = 8, .blockStep = wiener ? 3 : 4, .groupSize = wiener ? 32 : 16, .bmRange = 16,
              .bmStep = 1, .lambda = wiener ? 0.0 : 2.7};
     switch (profile) {
     case Profile::fast:
@@ -367,7 +365,6 @@ Params profileDefaults(Profile profile, bool wiener, bool temporal) {
     if (!temporal)
         return p;
 
-    p.radius = defaultRadius(profile);
     p.groupSize = profile == Profile::vn ? 16 : 8;
     p.psNum = 2;
     p.psStep = 1;
@@ -941,11 +938,9 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"DCT3_BLOCK", "dct3_" + std::to_string(p.blockSize)},
         {"FMA(a, b, c)", "fma(T(a), b, c)"},
         {"FMS(a, b, c)", "fma(T(a), b, -(c))"},
-        {"FNMA(a, b, c)", "(-fma(T(a), b, c))"},
         {"FNMS(a, b, c)", "fma(-T(a), b, c)"},
         {"SFMA(a, b, c)", "fma(S(a), b, c)"},
         {"SFMS(a, b, c)", "fma(S(a), b, -(c))"},
-        {"SFNMA(a, b, c)", "(-fma(S(a), b, c))"},
         {"SFNMS(a, b, c)", "fma(-S(a), b, c)"},
         {"Z_SCALAR", fp16Math ? "0" : "1"},
     };
@@ -1005,8 +1000,7 @@ std::string scalarCodelet(std::string_view codelet) {
         s += word ? 'S' : codelet[i];
     }
     for (const auto& [from, to] :
-         {std::pair{"dct2_"sv, "dct2s_"sv}, {"dct3_"sv, "dct3s_"sv}, {"FMA("sv, "SFMA("sv}, {"FMS("sv, "SFMS("sv}, {"FNMA("sv, "SFNMA("sv},
-          {"FNMS("sv, "SFNMS("sv}})
+         {std::pair{"dct2_"sv, "dct2s_"sv}, {"dct3_"sv, "dct3s_"sv}, {"FMA("sv, "SFMA("sv}, {"FMS("sv, "SFMS("sv}, {"FNMS("sv, "SFNMS("sv}})
         s = replaceAll(std::move(s), from, to);
     return s;
 }
@@ -1709,7 +1703,7 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
 }
 
 bool Filter::canContinue(int n) const {
-    return cursor_.valid && n >= cursor_.emittedUpTo && cursor_.nextRef >= n - params_.radius && n >= cursor_.firstComplete;
+    return cursor_.valid && n >= cursor_.emittedUpTo && cursor_.nextRef >= n - params_.radius;
 }
 
 // Restarts the ring so that frame n is the first complete one; only frame 0 needs no reference frames before it.
