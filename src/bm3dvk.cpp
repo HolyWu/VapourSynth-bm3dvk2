@@ -58,22 +58,20 @@ constexpr int maxDimension = 65536; // block positions are packed as two 16-bit 
 constexpr int imageTile = 16;
 constexpr int bmSubgroupsPreferred = 2;
 constexpr int bmChunkMax = 2048;
-// Candidate rows per lane in the blockMatch kernel when searches take several chunks: NY_FULL of the full search is
-// bmItemRows, NY_PS of predictive searches bmPredictiveItemRows for groups larger than bmSmallGroup and bmItemRows
-// otherwise (measured best); both are 1 for search steps of a block or more. In a single chunk itemShape chooses them,
-// and the columns of the full search's items: at most bmItemColsMax, and bmItemCandidatesMax candidates per item.
+// Candidate rows per lane in the blockMatch kernel when searches take several chunks: NY_FULL of the full search is bmItemRows, NY_PS of predictive searches
+// bmPredictiveItemRows for groups larger than bmSmallGroup and bmItemRows otherwise (measured best); both are 1 for search steps of a block or more. In a
+// single chunk itemShape chooses them, and the columns of the full search's items: at most bmItemColsMax, and bmItemCandidatesMax candidates per item.
 constexpr int bmItemRows = 4;
 constexpr int bmPredictiveItemRows = 2;
 constexpr int bmSmallGroup = 8;
 constexpr int bmItemRowsMax = 6;
 constexpr int bmItemColsMax = 4;
 constexpr int bmItemCandidatesMax = 12;
-// Most rows per item of a predictive search in a single chunk, with the reference block in registers and in shared memory:
-// more rows than that leave too few registers, which the driver makes up for with spills (measured).
+// Most rows per item of a predictive search in a single chunk, with the reference block in registers and in shared memory: more rows than that leave too few
+// registers, which the driver makes up for with spills (measured).
 constexpr int bmPredictiveItemRowsMaxInRegs = 5;
 constexpr int bmPredictiveItemRowsMax = 8;
-// Least squared distance between the positions of a lane's slots in a spatial search keyed by slot, which pads its rows
-// for it.
+// Least squared distance between the positions of a lane's slots in a spatial search keyed by slot, which pads its rows for it.
 constexpr int bmSpatialLaneSpacing = 10;
 // Cost of a window load relative to a distance FMA in the full and the predictive searches (measured).
 constexpr double bmFullLoadCost = 2.0;
@@ -614,8 +612,8 @@ int64_t batchRefs(const Plan& plan) {
     return int64_t{plan.batchRows} * plan.refCols;
 }
 
-// A window buffer of `frames` planes. Full-search items of several columns read up to (NX_FULL - 1) * BM_STEP samples past
-// the right edge, past the last plane at its last row; only the candidates rejected there take them.
+// A window buffer of `frames` planes. Full-search items of several columns read up to (NX_FULL - 1) * BM_STEP samples past the right edge, past the last plane
+// at its last row; only the candidates rejected there take them.
 int64_t windowBytes(const Params& p, const Plan& plan, int frames) {
     return (planeElements(plan) * frames + int64_t{plan.bmFullCols - 1} * p.bmStep) * storeBytes(plan);
 }
@@ -645,12 +643,10 @@ int64_t windowCandidates(int cols, int rows, int itemRows) {
     return int64_t{(rows + itemRows - 1) / itemRows * itemRows} * cols;
 }
 
-// Rows and columns per item of a search in a single chunk: an item costs the distance operations of its candidates (an FMA
-// per sample in correlation form, else a subtraction and an FMA) plus the window rows its lane loads (in correlation form
-// with the mean offset, and an energy FMA per sample of each candidate column), and the lanes take items a subgroup at a
-// time. Ties keep fewer columns.
-std::pair<int, int> itemShape(int cols, int rows, int windows, int step, int blockSize, int sg, double loadCost, bool correlation, int maxRows,
-                              int maxCols) {
+// Rows and columns per item of a search in a single chunk: an item costs the distance operations of its candidates (an FMA per sample in correlation form, else
+// a subtraction and an FMA) plus the window rows its lane loads (in correlation form with the mean offset, and an energy FMA per sample of each candidate
+// column), and the lanes take items a subgroup at a time. Ties keep fewer columns.
+std::pair<int, int> itemShape(int cols, int rows, int windows, int step, int blockSize, int sg, double loadCost, bool correlation, int maxRows, int maxCols) {
     const double sampleCost = correlation ? 1.0 : 2.0;
     const double sampleLoadCost = correlation ? loadCost + 1.0 : loadCost;
     std::pair best{1, 1};
@@ -671,8 +667,7 @@ std::pair<int, int> itemShape(int cols, int rows, int windows, int step, int blo
 }
 
 Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
-    Plan plan{.width = vi.width, .height = vi.height, .planes = vi.format.numPlanes, .fp16Input = vi.format.bitsPerSample == 16,
-              .slots = p.radius * 2 + 1};
+    Plan plan{.width = vi.width, .height = vi.height, .planes = vi.format.numPlanes, .fp16Input = vi.format.bitsPerSample == 16, .slots = p.radius * 2 + 1};
 
     plan.refCols = divCeil(vi.width - p.blockSize, p.blockStep) + 1;
     plan.refRows = divCeil(vi.height - p.blockSize, p.blockStep) + 1;
@@ -708,30 +703,28 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.fullRows = windowSide(p.bmRange, p.bmStep, vi.height, p.blockSize);
     plan.psCols = windowSide(p.psRange, p.psStep, vi.width, p.blockSize);
     plan.psRows = windowSide(p.psRange, p.psStep, vi.height, p.blockSize);
-    // Row-major slots of a lane lie SG apart: SG / pitch rows down and SG % pitch columns across, or a row further and
-    // pitch - SG % pitch columns back, the nearer at the squared distance laneSpacing. Diagonal neighbours there would
-    // have correlated distances (see blockMatch).
+    // Row-major slots of a lane lie SG apart: SG / pitch rows down and SG % pitch columns across, or a row further and pitch - SG % pitch columns back, the
+    // nearer at the squared distance laneSpacing. Diagonal neighbours there would have correlated distances (see blockMatch).
     const auto laneSpacing = [sg](int64_t pitch) {
         const int64_t down = sg / pitch;
         const int64_t across = sg % pitch;
         return std::min(down * down + across * across, (down + 1) * (down + 1) + (pitch - across) * (pitch - across));
     };
-    // A spatial search wider than a subgroup is keyed by slot (see selectSlots), its rows padded until a lane's slots lie
-    // apart; narrower ones, with few candidates, run faster on the general merge (measured). No pitch puts a lane's slots
-    // further apart than SG columns in a row.
+    // A spatial search wider than a subgroup is keyed by slot (see selectSlots), its rows padded until a lane's slots lie apart; narrower ones, with few
+    // candidates, run faster on the general merge (measured). No pitch puts a lane's slots further apart than SG columns in a row.
     plan.bmSlotKeys = p.radius == 0 && plan.fullCols > sg;
     plan.fullPitch = plan.fullCols;
     while (plan.bmSlotKeys && laneSpacing(plan.fullPitch) < std::min(bmSpatialLaneSpacing, sg * sg))
         ++plan.fullPitch;
-    // A single chunk holds the candidates of every search without item padding, and stages the merges of the rest set
-    // in its first 4 * GROUP words; shared memory bounds how many workgroups an SM runs, so every word counts.
+    // A single chunk holds the candidates of every search without item padding, and stages the merges of the rest set in its first 4 * GROUP words; shared
+    // memory bounds how many workgroups an SM runs, so every word counts.
     const int64_t list = int64_t{p.groupSize} * sizeof(uint32_t);
     const auto exactCandidatesOf = [&](int psCols, int psRows) {
         return std::max(int64_t{plan.fullPitch} * plan.fullRows,
                         p.radius > 0 ? std::max(int64_t{psCols} * psRows * p.psNum, int64_t{p.groupSize} * 4) : int64_t{0});
     };
-    // The search centers of a frame mostly lie a step or so apart, their windows nearly the same: where their bounding box
-    // fits a window one step larger, it is searched as a single window, unless the larger layout takes more slots.
+    // The search centers of a frame mostly lie a step or so apart, their windows nearly the same: where their bounding box fits a window one step larger, it is
+    // searched as a single window, unless the larger layout takes more slots.
     const int unionCols = std::min(plan.psCols + 1, (vi.width - p.blockSize) / p.psStep + 1);
     const int unionRows = std::min(plan.psRows + 1, (vi.height - p.blockSize) / p.psStep + 1);
     plan.psUnion = p.radius > 0 && p.psNum > 1 && exactCandidatesOf(unionCols, unionRows) <= exactCandidatesOf(plan.psCols, plan.psRows);
@@ -746,10 +739,9 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     if (!std::in_range<int32_t>(maxCandidates))
         fail("too many search candidates, decrease \"bm_range\", \"ps_range\" or \"ps_num\"");
     const int64_t exactCandidates = exactCandidatesOf(plan.psCols, plan.psRows);
-    // Spatial windows no wider than a subgroup are register bound: a reference in shared memory frees the registers their
-    // selection network needs (measured). Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers;
-    // RADV indexes it through branch ladders and AMD's Windows compiler through scratch memory, both far slower than
-    // shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
+    // Spatial windows no wider than a subgroup are register bound: a reference in shared memory frees the registers their selection network needs (measured).
+    // Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers; RADV indexes it through branch ladders and AMD's Windows compiler
+    // through scratch memory, both far slower than shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
     plan.bmRefInRegs = gpu.nvidiaDriver &&p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
     const auto bmShared = [&](int subgroups, int64_t chunk, bool singleChunk) {
         const int64_t perSubgroup = (plan.bmRefInRegs ? 0 : int64_t{p.blockSize} * divCeil(p.blockSize, 4) * 4 * sizeof(float)) +
@@ -760,8 +752,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     };
     plan.fullRowMajor = plan.bmSlotKeys || laneSpacing(plan.fullPitch) > 2;
     plan.psRowMajor = laneSpacing(plan.psCols) > 2;
-    // Distances in correlation form take the reference block offset by its mean, which pays off where the block is read
-    // from shared memory; one in registers, which the compiler reads again from the window instead, does not (measured).
+    // Distances in correlation form take the reference block offset by its mean, which pays off where the block is read from shared memory; one in registers,
+    // which the compiler reads again from the window instead, does not (measured).
     plan.bmCorrelation = p.blockSize > bmRefInRegsMax;
     plan.bmSubgroups = std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);
     plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
@@ -790,9 +782,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         }
     }
 
-    // Mirrors the shared arrays of the filter kernel. A block row holds 2 * halfBlock elements; for 8-byte elements an odd
-    // stride puts the rows a pass reads at once into distinct banks, while 4-byte elements fare better with rows aligned
-    // for 16-byte loads (measured).
+    // Mirrors the shared arrays of the filter kernel. A block row holds 2 * halfBlock elements; for 8-byte elements an odd stride puts the rows a pass reads at
+    // once into distinct banks, while 4-byte elements fare better with rows aligned for 16-byte loads (measured).
     const int halfBlock = (p.blockSize + 1) / 2;
     plan.filterWorkgroup = std::min(std::clamp(static_cast<int>(std::bit_ceil(static_cast<unsigned>(p.groupSize * halfBlock))),
                                                std::max(filterWorkgroupMin, sg), std::max(filterWorkgroupMax, sg)),
@@ -801,16 +792,14 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const int elementBytes = gpu.fp16Math && plan.fp16Input ? 4 : 8;
     plan.blockPadded = 2 * halfBlock + (elementBytes == 8 ? 1 : 0);
     plan.groupBytes = int64_t{p.groupSize} * halfBlock * plan.blockPadded * elementBytes * (p.wiener ? 2 : 1) * (plan.pingpong ? 2 : 1);
-    // Wiener groups with a codelet z-pass keep the subgroup sums of the shrinkage in their own data unless the group is in
-    // memory (see STAT_IN_REF).
+    // Wiener groups with a codelet z-pass keep the subgroup sums of the shrinkage in their own data unless the group is in memory (see STAT_IN_REF).
     const int64_t partialShared = std::max(filterWorkgroupLimit / sg, 1) * sizeof(float);
     const int64_t filterFixedShared = p.wiener && p.groupSize <= dct::maxCodeletSize ? 0 : partialShared;
     plan.globalGroup = plan.groupBytes + filterFixedShared > gpu.maxSharedMemory;
     const int64_t groupShared = plan.globalGroup ? partialShared : plan.groupBytes + filterFixedShared;
 
-    // Tiles of filterTileRefs x filterTileRefs reference blocks share an accumulation tile covering their search windows.
-    // It pays off only when far more estimates land in the tile than its flush writes back, and not when it leaves an SM
-    // few workgroups where more would run without it.
+    // Tiles of filterTileRefs x filterTileRefs reference blocks share an accumulation tile covering their search windows. It pays off only when far more
+    // estimates land in the tile than its flush writes back, and not when it leaves an SM few workgroups where more would run without it.
     plan.searchMargin = std::min(p.bmRange / p.bmStep * p.bmStep, std::max(vi.width, vi.height));
     const int span = (filterTileRefs - 1) * p.blockStep + p.blockSize + plan.searchMargin * 2;
     const double tileSamples = static_cast<double>(p.groupSize) * p.blockSize * p.blockSize * filterTileRefs * filterTileRefs;
@@ -821,16 +810,15 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.tileRefs = plan.accTile ? filterTileRefs : 1;
     plan.tileSpan = plan.accTile ? span : 1;
 
-    // Shared memory bounds the workgroups an SM runs, an SM granting each workgroup the device's limit per workgroup at
-    // most (measured): where few fit, larger workgroups keep more warps busy.
+    // Shared memory bounds the workgroups an SM runs, an SM granting each workgroup the device's limit per workgroup at most (measured): where few fit, larger
+    // workgroups keep more warps busy.
     const int64_t workgroupShared = groupShared + (plan.accTile ? int64_t{span} * span * sizeof(float) : 0);
     const int64_t workgroupsPerSm = std::max<int64_t>(gpu.maxSharedMemory / workgroupShared, 1);
     while (plan.filterWorkgroup < std::min(filterWorkgroupLimit, gpu.maxWorkgroup) && workgroupsPerSm * plan.filterWorkgroup / sg < filterWarpsTarget)
         plan.filterWorkgroup *= 2;
 
-    // Without the odd stride, blocks of four row pairs of 8-byte elements are permuted to stay free of bank conflicts (see
-    // swizzled in shaders.h), where that fits more workgroups into an SM. The workgroup size and the tile stay those chosen
-    // for the padded layout.
+    // Without the odd stride, blocks of four row pairs of 8-byte elements are permuted to stay free of bank conflicts (see swizzled in shaders.h), where that
+    // fits more workgroups into an SM. The workgroup size and the tile stay those chosen for the padded layout.
     const int64_t paddingBytes = plan.groupBytes / plan.blockPadded;
     if (elementBytes == 8 && halfBlock == 4 && !plan.pingpong && !plan.globalGroup &&
         gpu.maxSharedMemory / (workgroupShared - paddingBytes) > workgroupsPerSm) {
@@ -949,9 +937,8 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
     return s;
 }
 
-// The z-pass of one line pair (T) or one line (S, Z_SCALAR) for every group size with a codelet: forward transform,
-// shrinkage, inverse transform. The Wiener weights are derived from the reference spectrum first and stored in its place,
-// so only one spectrum is live at a time.
+// The z-pass of one line pair (T) or one line (S, Z_SCALAR) for every group size with a codelet: forward transform, shrinkage, inverse transform. The Wiener
+// weights are derived from the reference spectrum first and stored in its place, so only one spectrum is live at a time.
 std::string zLineFunction(int groupSize, bool scalar) {
     constexpr std::string_view caseTemplate = R"glsl(
     case @: {
@@ -1209,8 +1196,8 @@ struct Groups {
     int y{1};
 };
 
-// GPU time of every dispatch from timestamp queries, for profiling: enabled by the environment variable BM3DVK_PROFILE
-// set to anything but empty or 0, and logged when the filter is freed. Dispatches past the capacity go untimed.
+// GPU time of every dispatch from timestamp queries, for profiling: enabled by the environment variable BM3DVK_PROFILE set to anything but empty or 0, and
+// logged when the filter is freed. Dispatches past the capacity go untimed.
 class KernelTimer {
 public:
     explicit KernelTimer(const Gpu& gpu) : vk_{gpu.vk}, device_{gpu.handles.device}, names_(capacity / 2) {
@@ -1398,8 +1385,8 @@ struct WorkBuffers {
     VkBuffer scratch{VK_NULL_HANDLE};
 };
 
-// One reference frame's block matching and filtering, over window frames [firstFrame, firstFrame + numFrames) of which
-// the reference frame is the cur-th; estimates land in frames [activeLo, activeHi] only.
+// One reference frame's block matching and filtering, over window frames [firstFrame, firstFrame + numFrames) of which the reference frame is the cur-th;
+// estimates land in frames [activeLo, activeHi] only.
 struct Step {
     int firstFrame{};
     int numFrames{1};
@@ -1408,9 +1395,9 @@ struct Step {
     int activeHi{};
 };
 
-// Temporal filtering scatters the estimates of reference frame m into frames m - radius .. m + radius. Accumulators of
-// those frames live in a ring, so each source frame is converted once and each frame is emitted once all of its
-// reference frames have been processed. getFrame runs fmUnordered, which serializes every access to this state.
+// Temporal filtering scatters the estimates of reference frame m into frames m - radius .. m + radius. Accumulators of those frames live in a ring, so each
+// source frame is converted once and each frame is emitted once all of its reference frames have been processed. getFrame runs fmUnordered, which serializes
+// every access to this state.
 struct TemporalCursor {
     bool valid{};
     int nextRef{};

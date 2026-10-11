@@ -54,9 +54,8 @@ void main() {
 }
 )glsl";
 
-// Accumulated numerator / denominator -> output frame planes (OPP -> RGB for RGB). The denominator is accumulated per
-// block at its top-left position; the denominator of a pixel is the sum over the BLOCK x BLOCK positions whose blocks
-// cover it, computed separably from a shared tile.
+// Accumulated numerator / denominator -> output frame planes (OPP -> RGB for RGB). The denominator is accumulated per block at its top-left position; the
+// denominator of a pixel is the sum over the BLOCK x BLOCK positions whose blocks cover it, computed separably from a shared tile.
 inline constexpr std::string_view normalize = R"glsl(
 layout(local_size_x = IMAGE_TILE, local_size_y = IMAGE_TILE) in;
 
@@ -124,9 +123,8 @@ void main() {
 }
 )glsl";
 
-// Block matching: one subgroup per reference block of the batch [refBase, refBase + refCount). Writes the group of each
-// reference block as (position, window frame) pairs, the reference block first, followed by the matches in the order the
-// CPU implementation stacks them.
+// Block matching: one subgroup per reference block of the batch [refBase, refBase + refCount). Writes the group of each reference block as (position, window
+// frame) pairs, the reference block first, followed by the matches in the order the CPU implementation stacks them.
 inline constexpr std::string_view blockMatch = R"glsl(
 layout(local_size_x = SG * NSG) in;
 
@@ -142,24 +140,21 @@ layout(push_constant) uniform Push {
     uint refCount;
 } pc;
 
-// Candidates are laid out in items of ny vertically adjacent search positions of nx adjacent columns (NY_FULL x NX_FULL
-// for the full search, NY_PS x 1 for predictive searches), so that one lane computes the distances of an item from shared
-// loads of the window rows. Candidate s is row s % ny of item s / ny (nx is 1 unless SINGLE_CHUNK). Every window of a
-// search takes the items of the largest window the search can have (FULL_COLS x FULL_ROWS or PS_COLS x PS_ROWS), so that
-// positions follow from divisions by constants; the columns and rows a window clipped at the frame border lacks are
-// rejected.
+// Candidates are laid out in items of ny vertically adjacent search positions of nx adjacent columns (NY_FULL x NX_FULL for the full search, NY_PS x 1 for
+// predictive searches), so that one lane computes the distances of an item from shared loads of the window rows. Candidate s is row s % ny of item s / ny (nx
+// is 1 unless SINGLE_CHUNK). Every window of a search takes the items of the largest window the search can have (FULL_COLS x FULL_ROWS or PS_COLS x PS_ROWS),
+// so that positions follow from divisions by constants; the columns and rows a window clipped at the frame border lacks are rejected.
 #define FULL_ITEMS ((FULL_ROWS + NY_FULL - 1) / NY_FULL * ((FULL_COLS + NX_FULL - 1) / NX_FULL))
 #define PS_ITEMS ((PS_ROWS + NY_PS - 1) / NY_PS * PS_COLS)
 #define FULL_SLOTS (FULL_ROWS * FULL_PITCH)
 #define PS_SLOTS (PS_ROWS * PS_COLS)
 
-// When every search fits one chunk (SINGLE_CHUNK), the padding rows and columns of the last items are spared. A window
-// stores candidate (w, row, col) row-major at slot (w * rows + row) * cols + col, unless its width puts the slots of a lane
-// (lane, lane + SG, ...) at diagonal neighbours (FULL_ROW_MAJOR, PS_ROW_MAJOR), whose correlated distances would keep
-// winning the selection rounds. Such a window keeps the item order, the items of its last item row holding just the rows
-// left: candidate (w, row0 + k, col) takes slot (w * rows + row0) * cols + col * n + k, n being the rows of its item.
-// A spatial search keyed by slot (SLOT_KEYS) instead pads its rows to FULL_PITCH slots, the padding INF, so that its
-// slots are row-major and lie apart for a lane: they then ascend with positions and serve as keys (see selectSlots).
+// When every search fits one chunk (SINGLE_CHUNK), the padding rows and columns of the last items are spared. A window stores candidate (w, row, col) row-major
+// at slot (w * rows + row) * cols + col, unless its width puts the slots of a lane (lane, lane + SG, ...) at diagonal neighbours (FULL_ROW_MAJOR,
+// PS_ROW_MAJOR), whose correlated distances would keep winning the selection rounds. Such a window keeps the item order, the items of its last item row holding
+// just the rows left: candidate (w, row0 + k, col) takes slot (w * rows + row0) * cols + col * n + k, n being the rows of its item. A spatial search keyed by
+// slot (SLOT_KEYS) instead pads its rows to FULL_PITCH slots, the padding INF, so that its slots are row-major and lie apart for a lane: they then ascend with
+// positions and serve as keys (see selectSlots).
 #if SINGLE_CHUNK
 #define SEARCH_SLOTS(full) ((full) ? FULL_SLOTS : PS_SLOTS)
 #define ITEM_END(base, count, ny, slots, items) ((slots) == (items) ? (count) : (count) / (slots) * (items))
@@ -174,10 +169,9 @@ layout(push_constant) uniform Push {
 #define CAND_STORED(row0, k, maxRows, col, wholeCols, cols) true
 #endif
 
-// The reference block is read in quads of columns, REF4(y, q) holding columns 4q to 4q + 3 of row y (zero past BLOCK):
-// from registers, or from shared memory where one load serves four columns. In correlation form (SSD_CORRELATION) it
-// holds -2r', r' = r - refMean, so that |r - f|^2 = refEnergy + sum(f'^2 - 2r'f'), f' = f - refMean: one FMA per sample
-// and candidate. The mean offset keeps the terms small where blocks are flat.
+// The reference block is read in quads of columns, REF4(y, q) holding columns 4q to 4q + 3 of row y (zero past BLOCK): from registers, or from shared memory
+// where one load serves four columns. In correlation form (SSD_CORRELATION) it holds -2r', r' = r - refMean, so that |r - f|^2 = refEnergy + sum(f'^2 - 2r'f'),
+// f' = f - refMean: one FMA per sample and candidate. The mean offset keeps the terms small where blocks are flat.
 #define REF_QUADS ((BLOCK + 3) / 4)
 float refMean;
 float refEnergy;
@@ -204,10 +198,10 @@ shared vec4 refBlock[NSG][BLOCK * REF_QUADS];
 #else
 #define ROW_UNROLL
 #endif
-// The window samples of row `row` an item reads: all at once in a loop of constant bounds (WHOLE_ROW_LOADS), or quad by
-// quad as the distance terms take them, which keeps NVIDIA's registers low. RADV unrolls neither a loop whose bounds vary
-// with the quad nor the loops around it, leaving v[] indexed at run time. Its sums then start from a zero it cannot fold:
-// from a literal 0.0 it starts a sum with a multiply, which ACO fuses into the next term instead, out of source order.
+// The window samples of row `row` an item reads: all at once in a loop of constant bounds (WHOLE_ROW_LOADS), or quad by quad as the distance terms take them,
+// which keeps NVIDIA's registers low. RADV unrolls neither a loop whose bounds vary with the quad nor the loops around it, leaving v[] indexed at run time. Its
+// sums then start from a zero it cannot fold: from a literal 0.0 it starts a sum with a multiply, which ACO fuses into the next term instead, out of source
+// order.
 #if WHOLE_ROW_LOADS
 #define LOAD_ROW(NX, STEP) \
     [[unroll]] for (int i = 0; i < ((NX) - 1) * (STEP) + BLOCK; ++i) \
@@ -238,8 +232,8 @@ shared uint restF[NSG][GROUP];
 shared uint centers[NSG][PS_NUM];
 shared uint curCenters[NSG][PS_NUM];
 #endif
-// Staging of merge results, (RADIUS > 0 ? 4 : 2) arrays of GROUP words. In a single chunk it takes the candidate slots,
-// which are dead by then, and the selection writes its list directly.
+// Staging of merge results, (RADIUS > 0 ? 4 : 2) arrays of GROUP words. In a single chunk it takes the candidate slots, which are dead by then, and the
+// selection writes its list directly.
 #if SINGLE_CHUNK
 #define STAGE(i) candD[sg][i]
 #else
@@ -275,9 +269,8 @@ ivec4 windowAround(ivec2 center, int range, int step) {
     return ivec4(l, t, (r - l) / step + 1, (b - t) / step + 1);
 }
 
-// Window w, position of the first candidate and its row and column within the window of an item of a search laid out in
-// items of ny rows and nx columns, cols columns and `items` items per window; false for the columns and rows a clipped
-// window lacks.
+// Window w, position of the first candidate and its row and column within the window of an item of a search laid out in items of ny rows and nx columns, cols
+// columns and `items` items per window; false for the columns and rows a clipped window lacks.
 bool itemPos(uint item, uint ny, uint nx, int step, uint cols, uint items, out uint w, out ivec2 pos, out uint row0, out uint col) {
     w = item / items;
     const uint local = item - w * items;
@@ -292,13 +285,12 @@ bool itemPos(uint item, uint ny, uint nx, int step, uint cols, uint items, out u
 bool inWindow(uint w, ivec2 pos, int step) {
     const ivec4 window = searchWin[sg][w];
     const ivec2 d = pos - window.xy;
-    return all(greaterThanEqual(d, ivec2(0))) && d.x % step == 0 && d.y % step == 0 && uint(d.x / step) < uint(window.z) &&
-        uint(d.y / step) < uint(window.w);
+    return all(greaterThanEqual(d, ivec2(0))) && d.x % step == 0 && d.y % step == 0 && uint(d.x / step) < uint(window.z) && uint(d.y / step) < uint(window.w);
 }
 
-// A predictive search over the bounding box of its windows (see predictiveSearch) holds the windows in records
-// 1..psCenters; where they do not fill the box (psNotRect), positions outside all of them are rejected. Bit k tells
-// whether row k of the item of ny rows at pos lies in one of them, the box lying on the position grid of every window.
+// A predictive search over the bounding box of its windows (see predictiveSearch) holds the windows in records 1..psCenters; where they do not fill the box
+// (psNotRect), positions outside all of them are rejected. Bit k tells whether row k of the item of ny rows at pos lies in one of them, the box lying on the
+// position grid of every window.
 #if PS_UNION
 uint psCenters;
 bool psNotRect;
@@ -319,9 +311,8 @@ uint centerRows(ivec2 pos, int ny) {
 #define centerRows(pos, ny) ~0u
 #endif
 
-// Adds window row `row`, r rows below the item's first candidate, to the distance terms d of the item's ROWS x NX
-// candidates. Each candidate sums its terms by rows and then columns, and in correlation form adds the energy of its own
-// columns, whatever the item's shape.
+// Adds window row `row`, r rows below the item's first candidate, to the distance terms d of the item's ROWS x NX candidates. Each candidate sums its terms by
+// rows and then columns, and in correlation form adds the energy of its own columns, whatever the item's shape.
 #define ADD_ROW(ROWS, NX, STEP) \
     float v[((NX) - 1) * (STEP) + BLOCK]; \
     float energy[NX]; \
@@ -351,10 +342,9 @@ uint centerRows(ivec2 pos, int ny) {
                 [[unroll]] for (int x = 0; x < (NX); ++x) \
                     d[k][x] += energy[x];
 
-// Distances of candidates [base, base + count) into candD, INF for those rejected: outside a clipped window, past the
-// threshold, at the excluded reference position of a full search, or already covered by an earlier window of a predictive
-// search. A lane handles whole items of ROWS x NX candidates, loading each window row once for every candidate it
-// overlaps. At a clipped right edge, an item's columns past the window read up to (NX - 1) * STEP samples past the row
+// Distances of candidates [base, base + count) into candD, INF for those rejected: outside a clipped window, past the threshold, at the excluded reference
+// position of a full search, or already covered by an earlier window of a predictive search. A lane handles whole items of ROWS x NX candidates, loading each
+// window row once for every candidate it overlaps. At a clipped right edge, an item's columns past the window read up to (NX - 1) * STEP samples past the row
 // (the window buffers are padded for the last one), which only the rejected candidates there take.
 #define DEFINE_DISTANCES(NAME, ROWS, NX, STEP, COLS, PITCH, ITEMS, MAX_ROWS, ROW_MAJOR, FULL) \
 void NAME(uint base, uint count, uint offset, ivec2 refPos) { \
@@ -437,8 +427,8 @@ float elementD(uint i, uint na) {
 }
 #endif
 
-// The lane holding the smallest (distance, key) of the subgroup, its distance in minD. Keys are compared only when
-// distances tie, which is rare enough that the common case costs one reduction.
+// The lane holding the smallest (distance, key) of the subgroup, its distance in minD. Keys are compared only when distances tie, which is rare enough that the
+// common case costs one reduction.
 uint argMin(float d, uint key, out float minD) {
     minD = subgroupMin(d);
     uvec4 ballot = subgroupBallot(d == minD);
@@ -459,8 +449,7 @@ void exchange(inout float d, inout uint i, uint mask, bool keepMin) {
     }
 }
 
-// Sorts the two cached pairs of every lane, (d0, i0) not after (d1, i1), by a bitonic network: lane l ends up with
-// ranks 2l (lo) and 2l + 1 (hi).
+// Sorts the two cached pairs of every lane, (d0, i0) not after (d1, i1), by a bitonic network: lane l ends up with ranks 2l (lo) and 2l + 1 (hi).
 void sortPairs(float d0, uint i0, float d1, uint i1, out float lo, out uint loI, out float hi, out uint hiI) {
     // Odd lanes start descending, so that the network starts at sequences of four.
     const bool odd = (lane & 1u) != 0u;
@@ -504,13 +493,11 @@ void insertPair(float eD, uint eI, inout float lo, inout uint loI, inout float h
 }
 
 #if SLOT_KEYS
-// mergeCandidates of a spatial search, whose single chunk is keyed by slot; the matches go to listK as positions. Each
-// lane scans its elements (lane, lane + SG, ...) for its two smallest (distance, slot) pairs and its third smallest
-// distance. Where k <= 2 * SG, a bitonic network sorts the cached pairs, lane l holding ranks 2l and 2l + 1. No match
-// exceeds the k-th of them, T, so beyond those only a lane whose third distance is at most T's can hold matches: its
-// elements past its cached ones up to T are inserted one by one, a few per search, the largest pair dropping out.
-// Otherwise rounds select ascending (distance, slot): as the elements a lane has left are those past the last one
-// selected, the rounds write no slot and need no synchronization.
+// mergeCandidates of a spatial search, whose single chunk is keyed by slot; the matches go to listK as positions. Each lane scans its elements (lane, lane +
+// SG, ...) for its two smallest (distance, slot) pairs and its third smallest distance. Where k <= 2 * SG, a bitonic network sorts the cached pairs, lane l
+// holding ranks 2l and 2l + 1. No match exceeds the k-th of them, T, so beyond those only a lane whose third distance is at most T's can hold matches: its
+// elements past its cached ones up to T are inserted one by one, a few per search, the largest pair dropping out. Otherwise rounds select ascending (distance,
+// slot): as the elements a lane has left are those past the last one selected, the rounds write no slot and need no synchronization.
 uint selectSlots(uint k) {
     float myD = INF, nextD = INF, thirdD = INF;
     uint myI = 0xFFFFFFFFu, nextI = 0xFFFFFFFFu;
@@ -605,11 +592,10 @@ uint selectSlots(uint k) {
 }
 #else
 #if SINGLE_CHUNK && GROUP * 2 <= SG
-// The rounds of mergeCandidates for a single chunk (na == 0) after a scan without keys: each lane caches its two
-// smallest distances, keyed after the scan, and its third smallest distance, so that the rounds need no refills and
-// leave candD as it is. A cached element tied with the third distance may follow an uncached one of that distance: such
-// a head takes key 0, as does the third, and once a round selects one of them, false is returned for mergeCandidates to
-// run as usual.
+// The rounds of mergeCandidates for a single chunk (na == 0) after a scan without keys: each lane caches its two smallest distances, keyed after the scan, and
+// its third smallest distance, so that the rounds need no refills and leave candD as it is. A cached element tied with the third distance may follow an
+// uncached one of that distance: such a head takes key 0, as does the third, and once a round selects one of them, false is returned for mergeCandidates to run
+// as usual.
 bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint n) {
     float d0 = INF, d1 = INF, d2 = INF;
     uint i0 = 0, i1 = 0;
@@ -640,10 +626,9 @@ bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint 
     }
 
 #if GROUP - 1 >= 7 && (RADIUS > 0 || !REF_IN_REGS)
-    // A full search sorts the cached pairs as selectSlots does, which pays from k = 7 on (measured), the network costing
-    // about as much as 5-6 rounds. Only a lane whose third distance is at most T's can hold further matches: its
-    // elements other than the cached ones up to T, keyed only for such lanes, are inserted. Spatial kernels with the
-    // reference in registers keep the rounds: without them and mergeCandidates, the driver spills the FP16 ones.
+    // A full search sorts the cached pairs as selectSlots does, which pays from k = 7 on (measured), the network costing about as much as 5-6 rounds. Only a
+    // lane whose third distance is at most T's can hold further matches: its elements other than the cached ones up to T, keyed only for such lanes, are
+    // inserted. Spatial kernels with the reference in registers keep the rounds: without them and mergeCandidates, the driver spills the FP16 ones.
     if (full) {
         float lo, hi;
         uint loK, hiK;
@@ -715,12 +700,10 @@ bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint 
 }
 #endif
 
-// Selects the k smallest (distance, position) pairs of listD/K[0, na) and the candidates [base, base + nc) held in
-// candD[0, nc) into listD/K, ascending. Distances of INF are never selected. Each lane caches the two smallest elements
-// it owns (lane, lane + SG, ...); a lane that wins a round promotes its runner-up, and only once that is used up does
-// the whole subgroup rescan the lane's elements to refill its minimum. A predictive search stops early, setting cut,
-// once its next match could no longer enter the nr entries of the rest set (see mergeRest). A single chunk tries
-// selectCached first.
+// Selects the k smallest (distance, position) pairs of listD/K[0, na) and the candidates [base, base + nc) held in candD[0, nc) into listD/K, ascending.
+// Distances of INF are never selected. Each lane caches the two smallest elements it owns (lane, lane + SG, ...); a lane that wins a round promotes its
+// runner-up, and only once that is used up does the whole subgroup rescan the lane's elements to refill its minimum. A predictive search stops early, setting
+// cut, once its next match could no longer enter the nr entries of the rest set (see mergeRest). A single chunk tries selectCached first.
 uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr, inout bool cut) {
 #if SINGLE_CHUNK && GROUP * 2 <= SG
     uint selected;
@@ -758,8 +741,8 @@ uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr, in
         if (minD == INF)
             break;
 #if RADIUS > 0
-        // The match of rank n here ranks n + #{rest distances <= minD} in the rest set, both growing with n; the first
-        // PS_NUM matches are still needed as the next frame's search centers.
+        // The match of rank n here ranks n + #{rest distances <= minD} in the rest set, both growing with n; the first PS_NUM matches are still needed as the
+        // next frame's search centers.
         if (!full && n >= uint(PS_NUM) && (n >= GROUP - 1 || (GROUP - 2 - n < nr && restD[sg][GROUP - 2 - n] <= minD))) {
             cut = true;
             break;
@@ -824,8 +807,7 @@ uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr, in
 }
 #endif
 
-// Block matching over the first `windows` windows: the k best matches end up in listD/K (see mergeCandidates for nr and
-// cut).
+// Block matching over the first `windows` windows: the k best matches end up in listD/K (see mergeCandidates for nr and cut).
 uint search(uint offset, bool full, ivec2 refPos, uint k, uint windows, uint nr, inout bool cut) {
     const uint total = windows * SEARCH_SLOTS(full);
     uint n = 0;
@@ -848,12 +830,12 @@ uint search(uint offset, bool full, ivec2 refPos, uint k, uint windows, uint nr,
 }
 
 #if RADIUS > 0
-// Predictive search in another frame over the union of the windows around the centers. Returns the number of matches;
-// cut tells that it stopped short, its remaining matches ranking past the rest set.
+// Predictive search in another frame over the union of the windows around the centers. Returns the number of matches; cut tells that it stopped short, its
+// remaining matches ranking past the rest set.
 uint predictiveSearch(uint numCenters, uint offset, uint nr, inout bool cut) {
 #if PS_UNION
-    // The windows go to records 1..numCenters. Where their bounding box fits the layout, it is searched as the single
-    // window 0; otherwise they move down to records 0.. and are searched one after another.
+    // The windows go to records 1..numCenters. Where their bounding box fits the layout, it is searched as the single window 0; otherwise they move down to
+    // records 0.. and are searched one after another.
     uint windows = numCenters;
     bool notRect = false;
     if (lane == 0) {
@@ -899,8 +881,8 @@ uint predictiveSearch(uint numCenters, uint offset, uint nr, inout bool cut) {
     return search(offset, false, ivec2(-1), GROUP, windows, nr, cut);
 }
 
-// Keeps the GROUP - 1 smallest (distance, concatenation index) entries of the rest set and the frame list in listD/K.
-// Both sets are small and hold unique keys, so every element finds its rank directly instead of in selection rounds.
+// Keeps the GROUP - 1 smallest (distance, concatenation index) entries of the rest set and the frame list in listD/K. Both sets are small and hold unique keys,
+// so every element finds its rank directly instead of in selection rounds.
 uint mergeRest(uint nr, uint nl, uint concatBase, uint frame) {
     const uint total = nr + nl;
     for (uint i = lane; i < total; i += SG) {
@@ -948,8 +930,7 @@ void main() {
 
     for (uint slot = gl_WorkGroupID.x * NSG + sg; slot < pc.refCount; slot += gl_NumWorkGroups.x * NSG) {
         const uint ref = pc.refBase + slot;
-        const ivec2 refPos = ivec2(min(int(ref % REF_COLS) * BLOCK_STEP, WIDTH - BLOCK),
-                                   min(int(ref / REF_COLS) * BLOCK_STEP, HEIGHT - BLOCK));
+        const ivec2 refPos = ivec2(min(int(ref % REF_COLS) * BLOCK_STEP, WIDTH - BLOCK), min(int(ref / REF_COLS) * BLOCK_STEP, HEIGHT - BLOCK));
         const uint out0 = slot * GROUP;
         if (lane == 0)
             matches.entries[out0] = uvec2(packPos(refPos), pc.cur);
@@ -1044,10 +1025,9 @@ void main() {
 }
 )glsl";
 
-// Collaborative filtering: one workgroup per group and plane. The group is held as T pairs of vertically adjacent
-// samples, element (z, p, x) covering rows 2p and 2p + 1 of column x of block z, so the row and column transforms run on
-// two lines at once (the codelet z-pass too, unless Z_SCALAR). The z-pass function zLine, specialized for the group sizes
-// in use, is spliced in between the two halves.
+// Collaborative filtering: one workgroup per group and plane. The group is held as T pairs of vertically adjacent samples, element (z, p, x) covering rows 2p
+// and 2p + 1 of column x of block z, so the row and column transforms run on two lines at once (the codelet z-pass too, unless Z_SCALAR). The z-pass function
+// zLine, specialized for the group sizes in use, is spliced in between the two halves.
 inline constexpr std::string_view filterHead = R"glsl(
 layout(local_size_x = WG) in;
 
@@ -1082,9 +1062,9 @@ layout(push_constant) uniform Push {
 #define BUF_T (GRP_T * (WIENER + 1))
 #define NUM_SG (WG / SG)
 
-// Index of element i of block z, i counted in the unpermuted layout. Unpadded blocks of four row pairs of 8-byte elements
-// (GROUP_SWIZZLE 2) stay free of bank conflicts by a permutation instead: block z swaps its row pairs by z & 1 and XORs
-// the column with z & 1, the high bit of the row pair and z >> 1 & 1. Blocks start at multiples of 32 elements there.
+// Index of element i of block z, i counted in the unpermuted layout. Unpadded blocks of four row pairs of 8-byte elements (GROUP_SWIZZLE 2) stay free of bank
+// conflicts by a permutation instead: block z swaps its row pairs by z & 1 and XORs the column with z & 1, the high bit of the row pair and z >> 1 & 1. Blocks
+// start at multiples of 32 elements there.
 uint swizzled(uint z, uint i) {
 #if GROUP_SWIZZLE == 2
     return i ^ ((z & 1u) * 12u | (i >> 3 & 2u) | (z >> 1 & 1u));
@@ -1103,8 +1083,8 @@ shared T groupData[BUF_T * (PINGPONG + 1)];
 #define SYNC() barrier()
 #endif
 
-// A Wiener group in shared memory with a codelet z-pass keeps the sum of each subgroup in a reference element its first
-// z-line no longer needs (see statElem), so that shared memory holds the group data alone.
+// A Wiener group in shared memory with a codelet z-pass keeps the sum of each subgroup in a reference element its first z-line no longer needs (see statElem),
+// so that shared memory holds the group data alone.
 #define STAT_IN_REF (WIENER != 0 && GROUP <= MAX_CODELET && GLOBAL_GROUP == 0)
 #if !STAT_IN_REF
 shared float partial[NUM_SG];
@@ -1135,16 +1115,16 @@ void accumulate(uint i, float v) {
 #endif
 }
 
-// The numerator of the reference frame around the tile of reference blocks the workgroup processes, which holds every
-// block the full search can match: estimates accumulate here and reach memory in one pass per tile. Without ACC_TILE the
-// tile would not fit into shared memory and every estimate goes to memory directly.
+// The numerator of the reference frame around the tile of reference blocks the workgroup processes, which holds every block the full search can match:
+// estimates accumulate here and reach memory in one pass per tile. Without ACC_TILE the tile would not fit into shared memory and every estimate goes to memory
+// directly.
 #if !ACC_TILE
 #define TILE_H 1
 #define TILE_W 1
 #endif
-// The tile holds fixed point sums of 26 fraction bits: integer atomics are native in shared memory, where float ones may
-// be emulated. Values out of range go to memory directly, and so does the 2^32 a wrapping addition loses. So do groups
-// weighted below 2^16 units, which keeps the error rounding adds to an estimate within 2^-17.
+// The tile holds fixed point sums of 26 fraction bits: integer atomics are native in shared memory, where float ones may be emulated. Values out of range go to
+// memory directly, and so does the 2^32 a wrapping addition loses. So do groups weighted below 2^16 units, which keeps the error rounding adds to an estimate
+// within 2^-17.
 #define TILE_SCALE 67108864.0
 ivec2 tileOrigin;
 ivec2 tileSize;
@@ -1180,9 +1160,8 @@ S threshold(S v, uint z, uint y, uint x, inout float stat) {
     return keep ? v : S(0);
 }
 
-// The empirical Wiener weight of the reference coefficient at (z, y, x), summing the squared weights. It is computed in
-// single precision: squares of half precision coefficients and small noise variances are not representable in half
-// precision.
+// The empirical Wiener weight of the reference coefficient at (z, y, x), summing the squared weights. It is computed in single precision: squares of half
+// precision coefficients and small noise variances are not representable in half precision.
 S wienerWeight(S r, uint z, uint y, uint x, inout float stat) {
     const float r2 = float(r) * float(r);
     const float w = r2 / (r2 + coef[flagCount(z, y, x)]);
@@ -1203,9 +1182,9 @@ T wienerWeight(T r, uint z, uint p, uint x, inout float stat) {
     return r;
 }
 
-// The codelet z-pass runs on single lines of S (Z_SCALAR), which halves the registers a line pair of single precision
-// spectra takes, or on line pairs of T. Line l covers column x of row (pair) `row` at offset `off` within a block; false
-// for the padding row of odd blocks. Consecutive scalar lines are the two halves of one T element.
+// The codelet z-pass runs on single lines of S (Z_SCALAR), which halves the registers a line pair of single precision spectra takes, or on line pairs of T.
+// Line l covers column x of row (pair) `row` at offset `off` within a block; false for the padding row of odd blocks. Consecutive scalar lines are the two
+// halves of one T element.
 #if Z_SCALAR
 #define Z_LINES (HB * BLOCK * 2)
 #else
@@ -1228,8 +1207,8 @@ bool zLineOf(uint l, out uint off, out uint row, out uint x) {
 
 #if STAT_IN_REF
 #define Z_SUBGROUPS min(NUM_SG, (Z_LINES + SG - 1) / SG)
-// The reference element of block 0 on line s * SG, the first z-line of subgroup s: once filtered, nothing reads it
-// until the next group. A scalar line there (an even one) takes the first component.
+// The reference element of block 0 on line s * SG, the first z-line of subgroup s: once filtered, nothing reads it until the next group. A scalar line there
+// (an even one) takes the first component.
 uint statElem(uint s) {
     uint off, row, x;
     zLineOf(s * SG, off, row, x);
@@ -1245,8 +1224,7 @@ uint statElem(uint s) {
 #endif
 
 #if PINGPONG
-// Unnormalized DCT-II (forward) and DCT-III (inverse) matrix entries for sizes without a codelet, read from a table of
-// cos(pi * q / (2 * n)), q in [0, 4n).
+// Unnormalized DCT-II (forward) and DCT-III (inverse) matrix entries for sizes without a codelet, read from a table of cos(pi * q / (2 * n)), q in [0, 4n).
 float dctCoef(uint tableOffset, uint n, uint m, uint j, bool inverse) {
     if (inverse)
         return j == 0 ? 1.0 : 2.0 * cosTable.data[tableOffset + j * (m * 2 + 1) % (n * 4)];
@@ -1271,11 +1249,9 @@ void gather(uint k, float scale) {
         const bool inside = x < BLOCK;
         const bool second = p * 2 + 1 < BLOCK;
         const uint e = swizzled(z, i);
-        G(e) = T(vec2(inside ? float(srcWin[plane].data[offset]) : 0.0,
-                      inside && second ? float(srcWin[plane].data[offset + WIDTH]) : 0.0) * scale);
+        G(e) = T(vec2(inside ? float(srcWin[plane].data[offset]) : 0.0, inside && second ? float(srcWin[plane].data[offset + WIDTH]) : 0.0) * scale);
 #if WIENER
-        G(REF_GRP + e) = T(vec2(inside ? float(refWin[plane].data[offset]) : 0.0,
-                                inside && second ? float(refWin[plane].data[offset + WIDTH]) : 0.0) * scale);
+        G(REF_GRP + e) = T(vec2(inside ? float(refWin[plane].data[offset]) : 0.0, inside && second ? float(refWin[plane].data[offset + WIDTH]) : 0.0) * scale);
 #endif
     }
 }
@@ -1301,8 +1277,8 @@ void colPass(uint k, uint numGroups, bool inverse) {
     for (uint l = gl_LocalInvocationIndex; l < numGroups * k * HB; l += WG) {
         const uint block = l % (k * HB) / HB;
         const uint base = l / (k * HB) * GRP_T + block * BLK_T + l % HB * 2;
-        // With an even block stride, every column pair of a half-warp starts on an even one of its 16 bank pairs; odd
-        // blocks swap which column each component holds to take the odd ones (the transforms are component-wise).
+        // With an even block stride, every column pair of a half-warp starts on an even one of its 16 bank pairs; odd blocks swap which column each component
+        // holds to take the odd ones (the transforms are component-wise).
 #if BLOCK_P % 2 == 1 && HB % 2 == 0
         const uint flip = block % 2;
 #else
@@ -1448,9 +1424,9 @@ void accumulatePair(uint z, uint p, uint x, vec2 v) {
         accumulate(i + WIDTH, v.y);
 }
 
-// Inverse row transform of the source group, aggregating the result with the given weights. The denominator receives
-// the weight once per block, at the block's position; normalization spreads it over the block. Samples are accumulated
-// element by element, so consecutive lanes add to consecutive addresses of one block.
+// Inverse row transform of the source group, aggregating the result with the given weights. The denominator receives the weight once per block, at the block's
+// position; normalization spreads it over the block. Samples are accumulated element by element, so consecutive lanes add to consecutive addresses of one
+// block.
 void aggregate(uint k, float numWeight, float denWeight) {
 #if ACC_TILE
     groupInTile = denWeight * TILE_SCALE >= 65536.0;
