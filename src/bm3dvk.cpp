@@ -1408,19 +1408,6 @@ std::array<BindingLayout, 3> normalizeLayout(int planes) {
 
 constexpr std::array<BindingLayout, 3> blockMatchLayout{{{bindWindow, 1}, {bindMatches, 1}, {bindCounts, 1}}};
 
-std::vector<BindingLayout> filterLayout(const Params& p, const Plan& plan) {
-    const auto planes = static_cast<uint32_t>(plan.planes);
-    std::vector<BindingLayout> layout{{bindFilterSrc, planes}};
-    if (p.wiener)
-        layout.push_back({bindFilterRef, planes});
-    layout.insert(layout.end(), {{bindFilterMatches, 1}, {bindFilterCounts, 1}, {bindFilterAcc, planes}});
-    if (plan.globalGroup)
-        layout.push_back({bindFilterScratch, 1});
-    if (plan.pingpong)
-        layout.push_back({bindFilterCos, 1});
-    return layout;
-}
-
 // Working buffers of one window of converted frames, one accumulation of estimates and one batch of matches.
 struct WorkBuffers {
     PlaneBuffers srcWindow{};
@@ -1430,6 +1417,27 @@ struct WorkBuffers {
     VkBuffer counts{VK_NULL_HANDLE};
     VkBuffer scratch{VK_NULL_HANDLE};
 };
+
+// The descriptor writes of the filter kernel, whose bindings and counts also make its layout.
+std::vector<DescriptorWrite> filterBindings(const Params& p, const Plan& plan, const WorkBuffers& work, VkBuffer cosTable) {
+    std::vector<DescriptorWrite> bindings{bindBuffers(bindFilterSrc, work.srcWindow, plan.planes)};
+    if (p.wiener)
+        bindings.push_back(bindBuffers(bindFilterRef, work.refWindow, plan.planes));
+    bindings.insert(bindings.end(), {bindBuffers(bindFilterMatches, work.matches), bindBuffers(bindFilterCounts, work.counts),
+                                     bindBuffers(bindFilterAcc, work.acc, plan.planes)});
+    if (plan.globalGroup)
+        bindings.push_back(bindBuffers(bindFilterScratch, work.scratch));
+    if (plan.pingpong)
+        bindings.push_back(bindBuffers(bindFilterCos, cosTable));
+    return bindings;
+}
+
+std::vector<BindingLayout> filterLayout(const Params& p, const Plan& plan) {
+    std::vector<BindingLayout> layout;
+    for (const DescriptorWrite& b : filterBindings(p, plan, {}, VK_NULL_HANDLE))
+        layout.push_back({b.binding, b.count});
+    return layout;
+}
 
 // One reference frame's block matching and filtering, over window frames [firstFrame, firstFrame + numFrames) of which the reference frame is the cur-th;
 // estimates land in frames [activeLo, activeHi] only.
@@ -1679,18 +1687,7 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
     const PlaneBuffers& matchWindow = params_.wiener ? work.refWindow : work.srcWindow;
     const std::array bmBindings{bindBuffers(bindWindow, matchWindow[0]), bindBuffers(bindMatches, work.matches), bindBuffers(bindCounts, work.counts)};
 
-    std::array<DescriptorWrite, maxBindings> bindings{};
-    size_t count{};
-    bindings[count++] = bindBuffers(bindFilterSrc, work.srcWindow, plan_.planes);
-    if (params_.wiener)
-        bindings[count++] = bindBuffers(bindFilterRef, work.refWindow, plan_.planes);
-    bindings[count++] = bindBuffers(bindFilterMatches, work.matches);
-    bindings[count++] = bindBuffers(bindFilterCounts, work.counts);
-    bindings[count++] = bindBuffers(bindFilterAcc, work.acc, plan_.planes);
-    if (plan_.globalGroup)
-        bindings[count++] = bindBuffers(bindFilterScratch, work.scratch);
-    if (plan_.pingpong)
-        bindings[count++] = bindBuffers(bindFilterCos, cosTable_.buffer);
+    const std::vector<DescriptorWrite> bindings = filterBindings(params_, plan_, work, cosTable_.buffer);
 
     for (int row0 = 0; row0 < plan_.refRows; row0 += plan_.batchRows) {
         const int rows = std::min(plan_.batchRows, plan_.refRows - row0);
@@ -1710,8 +1707,7 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
                               .refRow0 = static_cast<uint32_t>(row0),
                               .refRows = static_cast<uint32_t>(rows)};
         const int tiles = divCeil(rows, plan_.tileRefs) * divCeil(plan_.refCols, plan_.tileRefs);
-        rec.dispatch(filter_, std::span{bindings.data(), count}, push,
-                     {std::min(plan_.filterGroupsX, tiles), static_cast<int>(plan_.activePlanes.size())});
+        rec.dispatch(filter_, bindings, push, {std::min(plan_.filterGroupsX, tiles), static_cast<int>(plan_.activePlanes.size())});
         rec.barrier();
     }
 }
