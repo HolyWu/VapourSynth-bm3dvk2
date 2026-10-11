@@ -1456,6 +1456,16 @@ public:
         }
     }
 
+    // Sigma and th_mse are normalized by the matrix, so opponent color space input must be filtered with matrix=100.
+    void checkMatrix(int n, VSFrameContext* frameCtx) const {
+        if (params_.matrix == matrixOPP)
+            return;
+        const FramePtr src{vsapi_->getFrameFilter(n, node_.get(), frameCtx), {vsapi_}};
+        int err{};
+        if (vsapi_->mapGetInt(vsapi_->getFramePropertiesRO(src.get()), "BM3D_OPP", 0, &err) == 1)
+            fail("the input frame property \"BM3D_OPP=1\" indicates opponent color space input, \"matrix=100\" must be specified");
+    }
+
     OutFramePtr spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) const;
     OutFramePtr temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core);
 
@@ -1796,6 +1806,7 @@ const VSFrame* VS_CC filterGetFrame(int n, int activationReason, void* instanceD
         }
         if (activationReason != arAllFramesReady)
             return nullptr;
+        d.checkMatrix(n, frameCtx);
         return (d.temporal() ? d.temporalFrame(n, frameCtx, core) : d.spatialFrame(n, frameCtx, core)).release();
     } catch (const std::exception& e) {
         vsapi->setFilterError(e.what(), frameCtx);
