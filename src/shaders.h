@@ -502,6 +502,14 @@ void insertPair(float eD, uint eI, inout float lo, inout uint loI, inout float h
     }
 }
 
+#if RADIUS > 0
+// Whether a predictive search stops before its match of rank n, of distance minD: the match ranks n + #{rest distances <= minD} in the rest set, both growing
+// with n; the first PS_NUM matches are still needed as the next frame's search centers.
+bool predictiveCut(bool full, uint n, uint nr, float minD) {
+    return !full && n >= uint(PS_NUM) && (n >= GROUP - 1 || (GROUP - 2 - n < nr && restD[sg][GROUP - 2 - n] <= minD));
+}
+#endif
+
 #if SLOT_KEYS
 // mergeCandidates of a spatial search, whose single chunk is keyed by slot; the matches go to listK as positions. Each lane scans its elements (lane, lane +
 // SG, ...) for its two smallest (distance, slot) pairs and its third smallest distance. Where k <= 2 * SG, a bitonic network sorts the cached pairs, lane l
@@ -689,7 +697,7 @@ bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint 
         if (minD == INF)
             break;
 #if RADIUS > 0
-        if (!full && n >= uint(PS_NUM) && (n >= GROUP - 1 || (GROUP - 2 - n < nr && restD[sg][GROUP - 2 - n] <= minD))) {
+        if (predictiveCut(full, n, nr, minD)) {
             cutHere = true;
             break;
         }
@@ -751,9 +759,7 @@ uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr, in
         if (minD == INF)
             break;
 #if RADIUS > 0
-        // The match of rank n here ranks n + #{rest distances <= minD} in the rest set, both growing with n; the first PS_NUM matches are still needed as the
-        // next frame's search centers.
-        if (!full && n >= uint(PS_NUM) && (n >= GROUP - 1 || (GROUP - 2 - n < nr && restD[sg][GROUP - 2 - n] <= minD))) {
+        if (predictiveCut(full, n, nr, minD)) {
             cut = true;
             break;
         }
