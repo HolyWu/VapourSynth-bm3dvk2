@@ -11,7 +11,7 @@ Ported from [VapourSynth-BM3D](https://github.com/HomeOfVapourSynthEvolution/Vap
 bm3dvk2.BM3D(vnode clip[, vnode ref=None, str profile="fast", float[] sigma=[10, 10, 10], int radius, int block_size, int block_step, int group_size, int bm_range, int bm_step, int ps_num, int ps_range, int ps_step, float th_mse, float hard_thr, int matrix=2])
 ```
 
-- clip: Clip to process. Gray or RGB of 16/32 bit float is supported. RGB is converted to the opponent color space internally and converted back for output. 16 bit float input is processed with half precision arithmetic where the device supports it.
+- clip: Clip to process. Gray or RGB of 16/32 bit float is supported. RGB is converted to the opponent color space internally and converted back for output. 16 bit float input is processed with half precision arithmetic where the device supports it, which holds content within the usual [0, 1] range: samples far above it, even a single one, can overflow (from about 370-1000 with the profile defaults, down to about 20 at block_size=64 and group_size=256), so use 32 bit float for such content.
 
 - ref: Reference clip, of the same format, dimensions and length as `clip`. When omitted, the basic estimate (collaborative hard-thresholding) is produced. When specified, the final estimate (collaborative Wiener filtering) is produced, with `ref` (usually a basic estimate) guiding block-matching and the Wiener filter.
 
