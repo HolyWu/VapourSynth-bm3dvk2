@@ -63,16 +63,19 @@ void main() {
 )glsl";
 
 // Accumulated numerator / denominator -> output frame planes (OPP -> RGB for RGB). The denominator is accumulated per block at its top-left position; the
-// denominator of a pixel is the sum over the BLOCK x BLOCK positions whose blocks cover it, computed separably from a shared tile.
+// denominator of a pixel is the sum over the BLOCK x BLOCK positions whose blocks cover it, computed separably from a shared tile. Planes left unfiltered
+// (outside ACTIVE_MASK) are taken from the source window.
 inline constexpr std::string_view normalize = R"glsl(
 layout(local_size_x = IMAGE_TILE, local_size_y = IMAGE_TILE) in;
 
 layout(set = 0, binding = 0, std430) readonly buffer Acc { ACC_T data[]; } acc[PLANES];
 layout(set = 0, binding = 1, std430) writeonly buffer Dst { STORE_T data[]; } dst[PLANES];
+layout(set = 0, binding = 2, std430) readonly buffer SrcWin { STORE_T data[]; } srcWin[PLANES];
 
 layout(push_constant) uniform Push {
     uint dstStride;
     uint accOffset;
+    uint srcOffset;
 } pc;
 
 #define SPAN (IMAGE_TILE + BLOCK - 1)
@@ -89,6 +92,8 @@ float accValue(uint plane, uint i) {
 }
 
 float estimate(uint plane, ivec2 p) {
+    if ((uint(ACTIVE_MASK) >> plane & 1u) == 0u)
+        return p.x < WIDTH && p.y < HEIGHT ? float(srcWin[plane].data[pc.srcOffset + uint(p.y) * WIDTH + uint(p.x)]) : 0.0;
     const ivec2 origin = ivec2(gl_WorkGroupID.xy) * IMAGE_TILE - (BLOCK - 1);
     for (uint i = gl_LocalInvocationIndex; i < SPAN * SPAN; i += IMAGE_TILE * IMAGE_TILE) {
         const ivec2 q = origin + ivec2(i % SPAN, i / SPAN);
@@ -1532,7 +1537,8 @@ void filterGroup(uint slot) {
 }
 
 void main() {
-    plane = gl_WorkGroupID.y;
+    const uint activePlanes[] = uint[](ACTIVE_PLANES);
+    plane = activePlanes[gl_WorkGroupID.y];
     float coefTable[PLANES * 4] = float[](COEF_TABLE);
     [[unroll]] for (uint i = 0; i < 4; ++i)
         coef[i] = coefTable[plane * 4 + i];

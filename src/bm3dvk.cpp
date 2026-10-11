@@ -96,6 +96,7 @@ constexpr int64_t accBytes = sizeof(float) * 2; // numerator and denominator per
 // Descriptor bindings, as declared by the kernels in shaders.h.
 constexpr uint32_t bindIn = 0;
 constexpr uint32_t bindOut = 1;
+constexpr uint32_t bindSrcWindow = 2;
 constexpr uint32_t bindWindow = 0;
 constexpr uint32_t bindMatches = 1;
 constexpr uint32_t bindCounts = 2;
@@ -566,6 +567,7 @@ struct Plan {
     int width{};
     int height{};
     int planes{};
+    std::vector<int> activePlanes;
     bool fp16Input{};
     int slots{};
     int blockPadded{};
@@ -699,6 +701,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // Coefficients are in the domain prescaled by the inverse square root of the transform gain, where the gain cancels.
     const std::array<double, 4> thresholdFactors{1.0, std::numbers::sqrt2, 2.0, std::sqrt(8.0)};
     for (int plane = 0; plane < plan.planes; ++plane) {
+        if (p.sigma[plane] > 0.0)
+            plan.activePlanes.push_back(plane);
         const double sigma = p.sigma[plane] / 255.0 * norms[plane];
         for (int flag = 0; flag < 4; ++flag)
             plan.coef[plane * 4 + flag] = static_cast<float>(p.wiener ? std::max(sigma * sigma * (1 << flag), double{std::numeric_limits<float>::min()})
@@ -882,11 +886,19 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
     std::string coef;
     for (int i = 0; i < plan.planes * 4; ++i)
         coef += (i ? ", " : "") + floatBits(plan.coef[i]);
+    std::string activePlanes;
+    int activeMask{};
+    for (const int plane : plan.activePlanes) {
+        activePlanes += (activePlanes.empty() ? "" : ", ") + std::to_string(plane);
+        activeMask |= 1 << plane;
+    }
 
     const std::vector<std::pair<std::string_view, std::string>> defines{
         {"WIDTH", std::to_string(plan.width)},
         {"HEIGHT", std::to_string(plan.height)},
         {"PLANES", std::to_string(plan.planes)},
+        {"ACTIVE_PLANES", activePlanes},
+        {"ACTIVE_MASK", std::to_string(activeMask)},
         {"STORE_T", plan.fp16Input ? "float16_t" : "float"},
         {"T", fp16Math ? "f16vec2" : "vec2"},
         {"S", fp16Math ? "float16_t" : "float"},
@@ -1060,6 +1072,7 @@ struct FilterPush {
 struct NormalizePush {
     uint32_t dstStride{};
     uint32_t accOffset{};
+    uint32_t srcOffset{};
 };
 
 template <typename T>
@@ -1068,7 +1081,7 @@ concept PushConstants = std::is_trivially_copyable_v<T> && std::is_standard_layo
 static_assert(PushConstants<ConvertPush> && sizeof(ConvertPush) == 8);
 static_assert(PushConstants<BlockMatchPush> && sizeof(BlockMatchPush) == 20);
 static_assert(PushConstants<FilterPush> && sizeof(FilterPush) == 24);
-static_assert(PushConstants<NormalizePush> && sizeof(NormalizePush) == 8);
+static_assert(PushConstants<NormalizePush> && sizeof(NormalizePush) == 12);
 
 struct BindingLayout {
     uint32_t binding{};
@@ -1379,6 +1392,11 @@ std::array<BindingLayout, 2> imageLayout(int planes) {
     return {{{bindIn, static_cast<uint32_t>(planes)}, {bindOut, static_cast<uint32_t>(planes)}}};
 }
 
+std::array<BindingLayout, 3> normalizeLayout(int planes) {
+    const auto count = static_cast<uint32_t>(planes);
+    return {{{bindIn, count}, {bindOut, count}, {bindSrcWindow, count}}};
+}
+
 constexpr std::array<BindingLayout, 3> blockMatchLayout{{{bindWindow, 1}, {bindMatches, 1}, {bindCounts, 1}}};
 
 std::vector<BindingLayout> filterLayout(const Params& p, const Plan& plan) {
@@ -1439,7 +1457,8 @@ public:
           blockMatch_{createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true})},
           filter_{createKernel(gpu_, core, {"BM3D filter", filterSource(params_, preamble_, !(gpu_.fp16Math && plan_.fp16Input)),
                                             filterLayout(params_, plan_), sizeof(FilterPush), true})},
-          normalize_{createKernel(gpu_, core, {"BM3D normalize", kernelSource(shader::normalize), imageLayout(plan_.planes), sizeof(NormalizePush), false})},
+          normalize_{createKernel(gpu_, core,
+                                  {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false})},
           maxEmitted_{emittedCapacity(core)}, timer_{profilingRequested() ? std::make_unique<KernelTimer>(gpu_) : nullptr}, pool_{createPool(core)} {
         if (plan_.pingpong)
             uploadCosTable(core);
@@ -1682,15 +1701,19 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
                               .refRow0 = static_cast<uint32_t>(row0),
                               .refRows = static_cast<uint32_t>(rows)};
         const int tiles = divCeil(rows, plan_.tileRefs) * divCeil(plan_.refCols, plan_.tileRefs);
-        rec.dispatch(filter_, std::span{bindings.data(), count}, push, {std::min(plan_.filterGroupsX, tiles), plan_.planes});
+        rec.dispatch(filter_, std::span{bindings.data(), count}, push,
+                     {std::min(plan_.filterGroupsX, tiles), static_cast<int>(plan_.activePlanes.size())});
         rec.barrier();
     }
 }
 
-// Writes the estimate of `frame`, held in its accumulator slot, to dst.
+// Writes the estimate of `frame`, held in its accumulator slot, to dst; planes not filtered are taken from its window slot.
 void Filter::recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const {
-    const std::array bindings{bindBuffers(bindIn, work.acc, plan_.planes), bindBuffers(bindOut, framePlanes(*gpu_.vkapi, dst, plan_.planes), plan_.planes)};
-    const NormalizePush push{.dstStride = elementStride(*vsapi_, dst), .accOffset = static_cast<uint32_t>(planeElements(plan_) * 2 * (frame % plan_.slots))};
+    const std::array bindings{bindBuffers(bindIn, work.acc, plan_.planes), bindBuffers(bindOut, framePlanes(*gpu_.vkapi, dst, plan_.planes), plan_.planes),
+                              bindBuffers(bindSrcWindow, work.srcWindow, plan_.planes)};
+    const NormalizePush push{.dstStride = elementStride(*vsapi_, dst),
+                             .accOffset = static_cast<uint32_t>(planeElements(plan_) * 2 * (frame % plan_.slots)),
+                             .srcOffset = static_cast<uint32_t>(planeElements(plan_) * (frame % plan_.slots))};
     rec.dispatch(normalize_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
 }
 
