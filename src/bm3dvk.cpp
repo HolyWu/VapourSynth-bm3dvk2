@@ -1457,9 +1457,9 @@ public:
     const VSVideoInfo& videoInfo() const noexcept { return vi_; }
     bool temporal() const noexcept { return params_.radius > 0; }
 
+    // Requests the source frames of frame n, which getSources takes.
     void request(int n, VSFrameContext* frameCtx) const {
-        const int lo = std::max(n - params_.radius * 2, 0);
-        const int hi = n + std::min(params_.radius * 2, vi_.numFrames - 1 - n);
+        const auto [lo, hi] = frameSpan(n, params_.radius * 2);
         for (int f = lo; f <= hi; ++f) {
             vsapi_->requestFrameFilter(f, node_.get(), frameCtx);
             if (refNode_)
@@ -1523,7 +1523,10 @@ private:
         return pool;
     }
 
-    Sources getSources(int lo, int hi, VSFrameContext* frameCtx) const;
+    // Frames center - reach .. center + reach within the clip, computed without overflow near INT_MAX.
+    std::pair<int, int> frameSpan(int center, int reach) const { return {std::max(center - reach, 0), center + std::min(reach, vi_.numFrames - 1 - center)}; }
+
+    Sources getSources(int n, VSFrameContext* frameCtx) const;
     void uploadCosTable(VSCore* core);
     template <typename Keep>
     WorkBuffers createWorkBuffers(VSCore* core, Keep keep) const;
@@ -1560,7 +1563,8 @@ private:
     PoolPtr pool_;
 };
 
-Filter::Sources Filter::getSources(int lo, int hi, VSFrameContext* frameCtx) const {
+Filter::Sources Filter::getSources(int n, VSFrameContext* frameCtx) const {
+    const auto [lo, hi] = frameSpan(n, params_.radius * 2);
     Sources sources{.lo = lo};
     sources.src.reserve(static_cast<size_t>(hi - lo + 1));
     sources.ref.reserve(refNode_ ? static_cast<size_t>(hi - lo + 1) : 0);
@@ -1696,7 +1700,7 @@ OutFramePtr Filter::newFrame(const VSFrame* propSrc, VSCore* core) const {
 }
 
 OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) const {
-    const Sources sources = getSources(n, n, frameCtx);
+    const Sources sources = getSources(n, frameCtx);
     OutFramePtr dst = newFrame(sources.src[0].get(), core);
 
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
@@ -1737,7 +1741,7 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
 
     const int radius = params_.radius;
     const int last = vi_.numFrames - 1;
-    const Sources sources = getSources(std::max(n - radius * 2, 0), n + std::min(radius * 2, last - n), frameCtx);
+    const Sources sources = getSources(n, frameCtx);
 
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
@@ -1749,12 +1753,11 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
     std::vector<std::pair<int, OutFramePtr>> frames;
     while (cursor.emittedUpTo <= n) {
         const int m = cursor.nextRef++;
-        for (; cursor.convertedUpTo <= m + std::min(radius, last - m); ++cursor.convertedUpTo)
+        const auto [firstFrame, lastFrame] = frameSpan(m, radius);
+        for (; cursor.convertedUpTo <= lastFrame; ++cursor.convertedUpTo)
             recordConvert(rec, ctx, persistent_, sources, cursor.convertedUpTo);
         rec.barrier();
 
-        const int firstFrame = std::max(m - radius, 0);
-        const int lastFrame = m + std::min(radius, last - m);
         recordStep(rec, persistent_,
                    {.firstFrame = firstFrame, .numFrames = lastFrame - firstFrame + 1, .cur = m - firstFrame,
                     .activeLo = std::max(firstFrame, cursor.firstComplete), .activeHi = lastFrame});
