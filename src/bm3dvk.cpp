@@ -1445,7 +1445,7 @@ public:
         if (plan_.pingpong)
             uploadCosTable(core);
         if (params_.radius > 0)
-            allocatePersistent(core);
+            persistent_ = createWorkBuffers(core, [this](GpuBuffer&& buffer) { return persistentBuffers_.emplace_back(std::move(buffer)).buffer; });
     }
 
     std::vector<VSFilterDependency> dependencies() const {
@@ -1526,8 +1526,8 @@ private:
 
     Sources getSources(int lo, int hi, VSFrameContext* frameCtx) const;
     void uploadCosTable(VSCore* core);
-    void allocatePersistent(VSCore* core);
-    WorkBuffers perFrameBuffers(const ExecContext& ctx, VSCore* core) const;
+    template <typename Keep>
+    WorkBuffers createWorkBuffers(VSCore* core, Keep keep) const;
     void recordConvert(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, const Sources& sources, int frame) const;
     void recordStep(const Recorder& rec, const WorkBuffers& work, const Step& step) const;
     void recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const;
@@ -1548,12 +1548,7 @@ private:
     Kernel filter_;
     Kernel normalize_;
     GpuBuffer cosTable_;
-    std::array<GpuBuffer, maxPlanes> srcWindow_;
-    std::array<GpuBuffer, maxPlanes> refWindow_;
-    std::array<GpuBuffer, maxPlanes> acc_;
-    GpuBuffer matches_;
-    GpuBuffer counts_;
-    GpuBuffer scratch_;
+    std::vector<GpuBuffer> persistentBuffers_;
     WorkBuffers persistent_;
     size_t maxEmitted_{};
     TemporalCursor cursor_;
@@ -1609,40 +1604,21 @@ void Filter::uploadCosTable(VSCore* core) {
         fail(err.data());
 }
 
-void Filter::allocatePersistent(VSCore* core) {
-    for (int plane = 0; plane < plan_.planes; ++plane) {
-        srcWindow_[plane] = createBuffer(gpu_, core, windowBytes(params_, plan_, plan_.slots));
-        persistent_.srcWindow[plane] = srcWindow_[plane].buffer;
-        if (params_.wiener) {
-            refWindow_[plane] = createBuffer(gpu_, core, windowBytes(params_, plan_, plan_.slots));
-            persistent_.refWindow[plane] = refWindow_[plane].buffer;
-        }
-        acc_[plane] = createBuffer(gpu_, core, planeElements(plan_) * accBytes * plan_.slots);
-        persistent_.acc[plane] = acc_[plane].buffer;
-    }
-    matches_ = createBuffer(gpu_, core, batchRefs(plan_) * params_.groupSize * matchBytes);
-    persistent_.matches = matches_.buffer;
-    counts_ = createBuffer(gpu_, core, batchRefs(plan_) * countBytes);
-    persistent_.counts = counts_.buffer;
-    if (plan_.globalGroup) {
-        scratch_ = createBuffer(gpu_, core, plan_.groupBytes * plan_.filterGroupsX * plan_.planes);
-        persistent_.scratch = scratch_.buffer;
-    }
-}
-
-WorkBuffers Filter::perFrameBuffers(const ExecContext& ctx, VSCore* core) const {
-    const auto scratch = [&](int64_t bytes) { return ctx.retain(createBuffer(gpu_, core, bytes)); };
+// The working buffers for plan_.slots frames, each handed to keep, which takes ownership and returns its handle.
+template <typename Keep>
+WorkBuffers Filter::createWorkBuffers(VSCore* core, Keep keep) const {
+    const auto buffer = [&](int64_t bytes) { return keep(createBuffer(gpu_, core, bytes)); };
     WorkBuffers work;
     for (int plane = 0; plane < plan_.planes; ++plane) {
-        work.srcWindow[plane] = scratch(windowBytes(params_, plan_, 1));
+        work.srcWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
         if (params_.wiener)
-            work.refWindow[plane] = scratch(windowBytes(params_, plan_, 1));
-        work.acc[plane] = scratch(planeElements(plan_) * accBytes);
+            work.refWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
+        work.acc[plane] = buffer(planeElements(plan_) * accBytes * plan_.slots);
     }
-    work.matches = scratch(batchRefs(plan_) * params_.groupSize * matchBytes);
-    work.counts = scratch(batchRefs(plan_) * countBytes);
+    work.matches = buffer(batchRefs(plan_) * params_.groupSize * matchBytes);
+    work.counts = buffer(batchRefs(plan_) * countBytes);
     if (plan_.globalGroup)
-        work.scratch = scratch(plan_.groupBytes * plan_.filterGroupsX * plan_.planes);
+        work.scratch = buffer(plan_.groupBytes * plan_.filterGroupsX * plan_.planes);
     return work;
 }
 
@@ -1719,7 +1695,7 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
     OutFramePtr dst = newFrame(sources.src[0].get(), core);
 
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
-    const WorkBuffers work = perFrameBuffers(ctx, core);
+    const WorkBuffers work = createWorkBuffers(core, [&ctx](GpuBuffer&& buffer) { return ctx.retain(std::move(buffer)); });
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
     for (int plane = 0; plane < plan_.planes; ++plane)
         rec.zero(work.acc[plane], 0, planeElements(plan_) * accBytes);
