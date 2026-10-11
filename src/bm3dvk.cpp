@@ -528,10 +528,11 @@ Params parseParams(const ArgReader& args, const VSVideoInfo& vi, bool wiener) {
     p.groupSize = intArg(args, "group_size", p.groupSize, {1, maxGroupSize});
     p.bmRange = intArg(args, "bm_range", p.bmRange, {1, unbounded});
     p.bmStep = intArg(args, "bm_step", p.bmStep, {1, p.bmRange});
+    // The predictive search is temporal only: spatial filtering ignores its parameters, keeping the defaults the plan is sized with.
     const Params temporalDefaults = profileDefaults(*profile, wiener, true);
-    p.psNum = intArg(args, "ps_num", temporalDefaults.psNum, {1, p.groupSize});
-    p.psRange = intArg(args, "ps_range", temporalDefaults.psRange, {1, unbounded});
-    p.psStep = intArg(args, "ps_step", temporalDefaults.psStep, {1, p.psRange});
+    p.psNum = radius > 0 ? intArg(args, "ps_num", temporalDefaults.psNum, {1, p.groupSize}) : temporalDefaults.psNum;
+    p.psRange = radius > 0 ? intArg(args, "ps_range", temporalDefaults.psRange, {1, unbounded}) : temporalDefaults.psRange;
+    p.psStep = radius > 0 ? intArg(args, "ps_step", temporalDefaults.psStep, {1, p.psRange}) : temporalDefaults.psStep;
 
     p.thMSE = args.real("th_mse").value_or(defaultThMSE(*profile, wiener, sigma[0]));
     if (p.thMSE < 0.0)
