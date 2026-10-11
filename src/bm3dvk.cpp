@@ -1435,8 +1435,8 @@ public:
           filter_{createKernel(gpu_, core, {"BM3D filter", filterSource(params_, preamble_, !(gpu_.fp16Math && plan_.fp16Input)),
                                             filterLayout(params_, plan_), sizeof(FilterPush), true})},
           normalize_{createKernel(gpu_, core, {"BM3D normalize", kernelSource(shader::normalize), imageLayout(plan_.planes), sizeof(NormalizePush), false})},
-          maxEmitted_{emittedCapacity(core)}, timer_{profilingRequested() ? std::make_unique<KernelTimer>(gpu_) : nullptr},
-          pool_{createPool(core)} {
+          maxEmitted_{emittedCapacity(core)}, returned_(static_cast<size_t>(vi_.numFrames)),
+          timer_{profilingRequested() ? std::make_unique<KernelTimer>(gpu_) : nullptr}, pool_{createPool(core)} {
         if (plan_.pingpong)
             uploadCosTable(core);
         if (params_.radius > 0)
@@ -1549,6 +1549,8 @@ private:
     TemporalCursor cursor_;
     std::map<int, EmittedFrame> emitted_;
     uint64_t emitAge_{};
+    // Frames returned at least once; a restart's cursor passing one again does not emit it again.
+    std::vector<bool> returned_;
     std::unique_ptr<KernelTimer> timer_;
     // Declared last so that it is destroyed first: freeing the pool drains every submission still using the members above.
     PoolPtr pool_;
@@ -1718,6 +1720,7 @@ TemporalCursor Filter::restart(const Recorder& rec, int n) const {
 }
 
 OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
+    returned_[n] = true;
     if (const auto it = emitted_.find(n); it != emitted_.end()) {
         OutFramePtr frame = std::move(it->second.frame);
         emitted_.erase(it);
@@ -1748,16 +1751,19 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
                    {.firstFrame = firstFrame, .numFrames = lastFrame - firstFrame + 1, .cur = m - firstFrame,
                     .activeLo = std::max(firstFrame, cursor.firstComplete), .activeHi = lastFrame});
 
+        // A frame already returned, passed again after a restart, is only cleared from the ring.
         for (const int retireHi = m == last ? last : m - radius; cursor.emittedUpTo <= retireHi; ++cursor.emittedUpTo) {
             const int f = cursor.emittedUpTo;
-            OutFramePtr dst = newFrame(sources.src[f - sources.lo].get(), core);
-            ctx.writes(dst.get(), plan_.planes);
-            recordNormalize(rec, persistent_, dst.get(), f);
-            rec.barrier();
+            if (f == n || !returned_[f]) {
+                OutFramePtr dst = newFrame(sources.src[f - sources.lo].get(), core);
+                ctx.writes(dst.get(), plan_.planes);
+                recordNormalize(rec, persistent_, dst.get(), f);
+                rec.barrier();
+                frames.emplace_back(f, std::move(dst));
+            }
             for (int plane = 0; plane < plan_.planes; ++plane)
                 rec.zero(persistent_.acc[plane], planeElements(plan_) * accBytes * (f % plan_.slots), planeElements(plan_) * accBytes);
             rec.barrier();
-            frames.emplace_back(f, std::move(dst));
         }
     }
     ctx.submit();
