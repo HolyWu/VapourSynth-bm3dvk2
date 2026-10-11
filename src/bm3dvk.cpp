@@ -773,7 +773,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
             itemShape(plan.fullCols, plan.fullRows, 1, p.bmStep, p.blockSize, sg, bmFullLoadCost, plan.bmCorrelation, bmItemRowsMax, bmItemColsMax);
         // Most union windows are a single window, which items of more rows fill in one pass of the subgroup.
         plan.bmPredictiveRows = itemShape(plan.psCols, plan.psRows, plan.psUnion ? 1 : p.psNum, p.psStep, p.blockSize, sg, bmPredictiveLoadCost,
-                                          plan.bmCorrelation, p.blockSize <= bmRefInRegsMax ? bmPredictiveItemRowsMaxInRegs : bmPredictiveItemRowsMax, 1)
+                                          plan.bmCorrelation,
+                                          gpu.nvidiaDriver && p.blockSize <= bmRefInRegsMax ? bmPredictiveItemRowsMaxInRegs : bmPredictiveItemRowsMax, 1)
                                     .first;
         plan.bmChunk = static_cast<int>(exactCandidates);
         while (bmShared(plan.bmSubgroups, plan.bmChunk, true) > gpu.maxSharedMemory)
