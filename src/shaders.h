@@ -817,6 +817,7 @@ uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr, in
             myK = refillK;
             myI = refillI;
         }
+        syncSubgroup();
     }
     syncSubgroup();
 #if !SINGLE_CHUNK
