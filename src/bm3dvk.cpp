@@ -539,9 +539,12 @@ Params parseParams(const ArgReader& args, const VSVideoInfo& vi, bool wiener) {
     p.thMSE = args.real("th_mse").value_or(defaultThMSE(*profile, wiener, sigma[0]));
     if (p.thMSE < 0.0)
         fail("\"th_mse\" must be a non-negative number");
-    p.lambda = args.real("hard_thr").value_or(p.lambda);
-    if (!wiener && p.lambda <= 0.0)
-        fail("\"hard_thr\" must be a positive number");
+    // Hard thresholding is basic only: final estimates ignore hard_thr.
+    if (!wiener) {
+        p.lambda = args.real("hard_thr").value_or(p.lambda);
+        if (p.lambda <= 0.0)
+            fail("\"hard_thr\" must be a positive number");
+    }
 
     if (vi.format.colorFamily == cfRGB) {
         p.matrix = matrixOPP;
