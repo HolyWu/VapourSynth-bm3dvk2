@@ -1267,6 +1267,9 @@ public:
 
     // The query pair of a dispatch about to be recorded, its first timestamp written.
     std::optional<uint32_t> begin(VkCommandBuffer cmd, const char* name) {
+        // Stops counting once full, so that the counter never wraps around to queries already written.
+        if (next_.load(std::memory_order_relaxed) >= capacity / 2)
+            return std::nullopt;
         const uint32_t pair = next_.fetch_add(1, std::memory_order_relaxed);
         if (pair >= capacity / 2)
             return std::nullopt;
