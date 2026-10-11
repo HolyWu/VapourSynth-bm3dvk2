@@ -353,7 +353,8 @@ uint centerRows(ivec2 pos, int ny) {
 // Distances of candidates [base, base + count) into candD, INF for those rejected: outside a clipped window, past the threshold, at the excluded reference
 // position of a full search, or already covered by an earlier window of a predictive search. A lane handles whole items of ROWS x NX candidates, loading each
 // window row once for every candidate it overlaps. At a clipped right edge, an item's columns past the window read up to (NX - 1) * STEP samples past the row
-// (the window buffers are padded for the last one), which only the rejected candidates there take.
+// (the window buffers are padded for the last one), which only the rejected candidates there take. The threshold tests the sum before the clamp of the
+// correlation form, so that NaN sums of non-finite samples fail it rather than clamp to 0.
 #define DEFINE_DISTANCES(NAME, ROWS, NX, STEP, COLS, PITCH, ITEMS, MAX_ROWS, ROW_MAJOR, FULL) \
 void NAME(uint base, uint count, uint offset, ivec2 refPos) { \
     for (uint item = base / ROWS + lane; item < ITEM_END(base, count, ROWS, (MAX_ROWS) * (PITCH), ITEMS); item += SG) { \
@@ -376,8 +377,9 @@ void NAME(uint base, uint count, uint offset, ivec2 refPos) { \
         [[unroll]] for (int k = 0; k < ROWS; ++k) \
             [[unroll]] for (int x = 0; x < (NX); ++x) { \
                 const ivec2 p = pos + ivec2(x, k) * (STEP); \
-                const float dist = SSD_CORRELATION != 0 ? max(refEnergy + d[k][x], 0.0) : d[k][x]; \
-                bool keep = inside && row0 + k < rows && (x == 0 || col + x < cols) && ((kept >> k) & 1u) != 0u && dist <= TH_SSE && !(FULL && p == refPos); \
+                const float sum = SSD_CORRELATION != 0 ? refEnergy + d[k][x] : d[k][x]; \
+                const float dist = SSD_CORRELATION != 0 ? max(sum, 0.0) : sum; \
+                bool keep = inside && row0 + k < rows && (x == 0 || col + x < cols) && ((kept >> k) & 1u) != 0u && sum <= TH_SSE && !(FULL && p == refPos); \
                 for (uint e = 0; e < w && keep; ++e) \
                     keep = !inWindow(e, p, STEP); \
                 if (CAND_STORED(row0, k, MAX_ROWS, col + x, (COLS) % (NX) == 0, COLS)) \
