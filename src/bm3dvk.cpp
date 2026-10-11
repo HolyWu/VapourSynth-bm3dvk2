@@ -757,7 +757,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // Spatial windows no wider than a subgroup are register bound: a reference in shared memory frees the registers their selection network needs (measured).
     // Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers; RADV indexes it through branch ladders and AMD's Windows compiler
     // through scratch memory, both far slower than shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
-    plan.bmRefInRegs = gpu.nvidiaDriver &&p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
+    plan.bmRefInRegs = gpu.nvidiaDriver && p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
     const auto bmShared = [&](int subgroups, int64_t chunk, bool singleChunk) {
         const int64_t perSubgroup = (plan.bmRefInRegs ? 0 : int64_t{p.blockSize} * divCeil(p.blockSize, 4) * 4 * sizeof(float)) +
                                     int64_t{plan.bmWindows} * 4 * sizeof(uint32_t) + chunk * sizeof(uint32_t) +
@@ -777,9 +777,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
             itemShape(plan.fullCols, plan.fullRows, 1, p.bmStep, p.blockSize, sg, bmFullLoadCost, plan.bmCorrelation, bmItemRowsMax, bmItemColsMax);
         // Most union windows are a single window, which items of more rows fill in one pass of the subgroup.
         plan.bmPredictiveRows = itemShape(plan.psCols, plan.psRows, plan.psUnion ? 1 : p.psNum, p.psStep, p.blockSize, sg, bmPredictiveLoadCost,
-                                          plan.bmCorrelation,
-                                          gpu.nvidiaDriver && p.blockSize <= bmRefInRegsMax ? bmPredictiveItemRowsMaxInRegs : bmPredictiveItemRowsMax, 1)
-                                    .first;
+                                          plan.bmCorrelation, plan.bmRefInRegs ? bmPredictiveItemRowsMaxInRegs : bmPredictiveItemRowsMax, 1).first;
         plan.bmChunk = static_cast<int>(exactCandidates);
         while (bmShared(plan.bmSubgroups, plan.bmChunk, true) > gpu.maxSharedMemory)
             --plan.bmSubgroups;
