@@ -262,7 +262,8 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
         limits.maxComputeWorkGroupSize[1] < imageTile)
         fail("the device's compute workgroups are too small");
     gpu.maxWorkgroup = static_cast<int>(std::bit_floor(
-        std::min({limits.maxComputeWorkGroupInvocations, limits.maxComputeWorkGroupSize[0], props13.maxComputeWorkgroupSubgroups * gpu.subgroupSize})));
+        std::min<uint64_t>({limits.maxComputeWorkGroupInvocations, limits.maxComputeWorkGroupSize[0],
+                            uint64_t{props13.maxComputeWorkgroupSubgroups} * gpu.subgroupSize})));
     gpu.maxSharedMemory = limits.maxComputeSharedMemorySize;
     gpu.maxGroupCountX = static_cast<int>(std::min<uint32_t>(limits.maxComputeWorkGroupCount[0], std::numeric_limits<int>::max()));
     gpu.maxStorageRange = limits.maxStorageBufferRange;
