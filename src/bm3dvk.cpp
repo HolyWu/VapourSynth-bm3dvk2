@@ -252,7 +252,8 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
 
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
     gpu.nvidiaDriver = props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
-    gpu.fp16Math = features12.shaderFloat16 == VK_TRUE;
+    // Half precision groups hold dark samples as subnormals (see buildPreamble): a device that cannot preserve them filters in single precision.
+    gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && props12.shaderDenormPreserveFloat16 == VK_TRUE;
     // Only a 16-bit mode independent of the 64-bit one may be set alone. NVIDIA's default is as close to the CPU implementation, and the mode costs its filter
     // about 3% (RTX 4060 Ti, RGBH final vn).
     gpu.fp16DenormPreserve = !gpu.nvidiaDriver && props12.shaderDenormPreserveFloat16 == VK_TRUE &&
