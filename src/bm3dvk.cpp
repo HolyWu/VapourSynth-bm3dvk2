@@ -533,11 +533,12 @@ Params parseParams(const ArgReader& args, const VSVideoInfo& vi, bool wiener) {
     p.groupSize = intArg(args, "group_size", p.groupSize, {1, maxGroupSize});
     p.bmRange = intArg(args, "bm_range", p.bmRange, {1, unbounded});
     p.bmStep = intArg(args, "bm_step", p.bmStep, {1, p.bmRange});
-    // The predictive search is temporal only: spatial filtering ignores its parameters, keeping the defaults the plan is sized with.
-    const Params temporalDefaults = profileDefaults(*profile, wiener, true);
-    p.psNum = radius > 0 ? intArg(args, "ps_num", temporalDefaults.psNum, {1, p.groupSize}) : temporalDefaults.psNum;
-    p.psRange = radius > 0 ? intArg(args, "ps_range", temporalDefaults.psRange, {1, unbounded}) : temporalDefaults.psRange;
-    p.psStep = radius > 0 ? intArg(args, "ps_step", temporalDefaults.psStep, {1, p.psRange}) : temporalDefaults.psStep;
+    // The predictive search is temporal only: spatial filtering ignores its parameters.
+    if (radius > 0) {
+        p.psNum = intArg(args, "ps_num", p.psNum, {1, p.groupSize});
+        p.psRange = intArg(args, "ps_range", p.psRange, {1, unbounded});
+        p.psStep = intArg(args, "ps_step", p.psStep, {1, p.psRange});
+    }
 
     p.thMSE = args.real("th_mse").value_or(defaultThMSE(*profile, wiener, sigma[0]));
     if (p.thMSE < 0.0)
@@ -589,13 +590,13 @@ struct Plan {
     int bmWindows{};
     int bmFullRows{};
     int bmFullCols{1};
-    int bmPredictiveRows{};
+    int bmPredictiveRows{1};
     int fullCols{};
     int fullRows{};
     int fullPitch{};
     bool bmSlotKeys{};
-    int psCols{};
-    int psRows{};
+    int psCols{1};
+    int psRows{1};
     bool psUnion{};
     int bmChunk{};
     bool bmSingleChunk{};
@@ -722,11 +723,14 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const auto sg = static_cast<int>(gpu.subgroupSize);
     // Candidates a block or more apart share no window rows, so their items hold a single row.
     plan.bmFullRows = p.bmStep < p.blockSize ? bmItemRows : 1;
-    plan.bmPredictiveRows = p.psStep >= p.blockSize ? 1 : p.groupSize > bmSmallGroup ? bmPredictiveItemRows : bmItemRows;
     plan.fullCols = windowSide(p.bmRange, p.bmStep, vi.width, p.blockSize);
     plan.fullRows = windowSide(p.bmRange, p.bmStep, vi.height, p.blockSize);
-    plan.psCols = windowSide(p.psRange, p.psStep, vi.width, p.blockSize);
-    plan.psRows = windowSide(p.psRange, p.psStep, vi.height, p.blockSize);
+    // The predictive search is temporal only: spatial plans keep its placeholder layout of a single candidate, which no spatial kernel takes.
+    if (p.radius > 0) {
+        plan.bmPredictiveRows = p.psStep >= p.blockSize ? 1 : p.groupSize > bmSmallGroup ? bmPredictiveItemRows : bmItemRows;
+        plan.psCols = windowSide(p.psRange, p.psStep, vi.width, p.blockSize);
+        plan.psRows = windowSide(p.psRange, p.psStep, vi.height, p.blockSize);
+    }
     // Row-major slots of a lane lie SG apart: SG / pitch rows down and SG % pitch columns across, or a row further and pitch - SG % pitch columns back, the
     // nearer at the squared distance laneSpacing. Diagonal neighbours there would have correlated distances (see blockMatch).
     const auto laneSpacing = [sg](int64_t pitch) {
@@ -754,12 +758,14 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     };
     // The search centers of a frame mostly lie a step or so apart, their windows nearly the same: where their bounding box fits a window one step larger, it is
     // searched as a single window, unless the larger layout takes more slots.
-    const int unionCols = std::min(plan.psCols + 1, (vi.width - p.blockSize) / p.psStep + 1);
-    const int unionRows = std::min(plan.psRows + 1, (vi.height - p.blockSize) / p.psStep + 1);
-    plan.psUnion = p.radius > 0 && p.psNum > 1 && exactCandidatesOf(unionCols, unionRows) <= exactCandidatesOf(plan.psCols, plan.psRows);
-    if (plan.psUnion) {
-        plan.psCols = unionCols;
-        plan.psRows = unionRows;
+    if (p.radius > 0) {
+        const int unionCols = std::min(plan.psCols + 1, (vi.width - p.blockSize) / p.psStep + 1);
+        const int unionRows = std::min(plan.psRows + 1, (vi.height - p.blockSize) / p.psStep + 1);
+        plan.psUnion = p.psNum > 1 && exactCandidatesOf(unionCols, unionRows) <= exactCandidatesOf(plan.psCols, plan.psRows);
+        if (plan.psUnion) {
+            plan.psCols = unionCols;
+            plan.psRows = unionRows;
+        }
     }
     plan.bmWindows = p.radius > 0 ? p.psNum + (plan.psUnion ? 1 : 0) : 1;
     const int64_t fullCandidates = windowCandidates(plan.fullCols, plan.fullRows, plan.bmFullRows);
@@ -790,8 +796,9 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         std::tie(plan.bmFullRows, plan.bmFullCols) =
             itemShape(plan.fullCols, plan.fullRows, 1, p.bmStep, p.blockSize, sg, bmFullLoadCost, plan.bmCorrelation, bmItemRowsMax, bmItemColsMax);
         // Most union windows are a single window, which items of more rows fill in one pass of the subgroup.
-        plan.bmPredictiveRows = itemShape(plan.psCols, plan.psRows, plan.psUnion ? 1 : p.psNum, p.psStep, p.blockSize, sg, bmPredictiveLoadCost,
-                                          plan.bmCorrelation, plan.bmRefInRegs ? bmPredictiveItemRowsMaxInRegs : bmPredictiveItemRowsMax, 1).first;
+        if (p.radius > 0)
+            plan.bmPredictiveRows = itemShape(plan.psCols, plan.psRows, plan.psUnion ? 1 : p.psNum, p.psStep, p.blockSize, sg, bmPredictiveLoadCost,
+                                              plan.bmCorrelation, plan.bmRefInRegs ? bmPredictiveItemRowsMaxInRegs : bmPredictiveItemRowsMax, 1).first;
         plan.bmChunk = static_cast<int>(exactCandidates);
         while (bmShared(plan.bmSubgroups, plan.bmChunk, true) > gpu.maxSharedMemory)
             --plan.bmSubgroups;
