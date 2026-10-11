@@ -1459,14 +1459,24 @@ public:
     OutFramePtr spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) const;
     OutFramePtr temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core);
 
+    // Waits out every submission; false when they may still be running, so nothing they use may be destroyed.
+    bool drain(VSCore* core) const {
+        std::array<char, errorSize> err{};
+        if (vsGPUDrainSafeToDestroy(gpu_.vkapi->gpuExecPoolWaitIdle(pool_.get(), err.data(), errorSize)))
+            return true;
+        vsapi_->logMessage(mtWarning, err.data(), core);
+        return false;
+    }
+
     // Logs the kernel times once every submission has completed, when profiling.
     void reportProfile(VSCore* core) const {
-        if (!timer_)
-            return;
-        std::array<char, errorSize> err{};
-        if (gpu_.vkapi->gpuExecPoolWaitIdle(pool_.get(), err.data(), errorSize) != gdDrained)
-            fail(err.data());
-        vsapi_->logMessage(mtInformation, timer_->report().c_str(), core);
+        if (timer_)
+            vsapi_->logMessage(mtInformation, timer_->report().c_str(), core);
+    }
+
+    void freeNodes() noexcept {
+        node_.reset();
+        refNode_.reset();
     }
 
 private:
@@ -1796,7 +1806,12 @@ const VSFrame* VS_CC filterGetFrame(int n, int activationReason, void* instanceD
 }
 
 void VS_CC filterFree(void* instanceData, VSCore* core, const VSAPI* vsapi) noexcept {
-    const std::unique_ptr<Filter> d{static_cast<Filter*>(instanceData)};
+    std::unique_ptr<Filter> d{static_cast<Filter*>(instanceData)};
+    // Submissions that may still be running keep the GPU objects they use: the filter is leaked rather than destroyed.
+    if (!d->drain(core)) {
+        d.release()->freeNodes();
+        return;
+    }
     try {
         d->reportProfile(core);
     } catch (const std::exception& e) {
