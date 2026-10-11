@@ -625,10 +625,10 @@ bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint 
         key0 = smaller;
     }
 
-#if GROUP - 1 >= 7 && (RADIUS > 0 || !REF_IN_REGS)
+#if GROUP - 1 >= 7
     // A full search sorts the cached pairs as selectSlots does, which pays from k = 7 on (measured), the network costing about as much as 5-6 rounds. Only a
     // lane whose third distance is at most T's can hold further matches: its elements other than the cached ones up to T, keyed only for such lanes, are
-    // inserted. Spatial kernels with the reference in registers keep the rounds: without them and mergeCandidates, the driver spills the FP16 ones.
+    // inserted.
     if (full) {
         float lo, hi;
         uint loK, hiK;
