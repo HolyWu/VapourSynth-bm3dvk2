@@ -1670,12 +1670,17 @@ WorkBuffers Filter::createWorkBuffers(VSCore* core, Keep keep) const {
         work.srcWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
         if (params_.wiener)
             work.refWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
-        work.acc[plane] = buffer(planeElements(plan_) * accBytes * plan_.slots);
     }
+    // Planes left unfiltered get no accumulator: their descriptors take that of a filtered plane, which no kernel touches for them.
+    for (const int plane : plan_.activePlanes)
+        work.acc[plane] = buffer(planeElements(plan_) * accBytes * plan_.slots);
+    for (int plane = 0; plane < plan_.planes; ++plane)
+        if (work.acc[plane] == VK_NULL_HANDLE)
+            work.acc[plane] = work.acc[plan_.activePlanes.front()];
     work.matches = buffer(batchRefs(plan_) * params_.groupSize * matchBytes(params_));
     work.counts = buffer(batchRefs(plan_) * countBytes);
     if (plan_.globalGroup)
-        work.scratch = buffer(plan_.groupBytes * plan_.filterGroupsX * plan_.planes);
+        work.scratch = buffer(plan_.groupBytes * plan_.filterGroupsX * static_cast<int64_t>(plan_.activePlanes.size()));
     return work;
 }
 
@@ -1746,7 +1751,7 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
     const WorkBuffers work = createWorkBuffers(core, [&ctx](GpuBuffer&& buffer) { return ctx.retain(std::move(buffer)); });
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
-    for (int plane = 0; plane < plan_.planes; ++plane)
+    for (const int plane : plan_.activePlanes)
         rec.zero(work.acc[plane], 0, planeElements(plan_) * accBytes);
     recordConvert(rec, ctx, work, sources, n);
     rec.barrier();
@@ -1765,7 +1770,7 @@ bool Filter::canContinue(int n) const {
 TemporalCursor Filter::restart(const Recorder& rec, int n) const {
     const int first = std::max(n - params_.radius, 0);
     const int firstComplete = first == 0 ? 0 : first + params_.radius;
-    for (int plane = 0; plane < plan_.planes; ++plane)
+    for (const int plane : plan_.activePlanes)
         rec.zero(persistent_.acc[plane], 0, planeElements(plan_) * accBytes * plan_.slots);
     return {.valid = true, .nextRef = first, .emittedUpTo = firstComplete, .firstComplete = firstComplete,
             .convertedUpTo = std::max(first - params_.radius, 0)};
@@ -1812,7 +1817,7 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
                 rec.barrier();
                 frames.emplace_back(f, std::move(dst));
             }
-            for (int plane = 0; plane < plan_.planes; ++plane)
+            for (const int plane : plan_.activePlanes)
                 rec.zero(persistent_.acc[plane], planeElements(plan_) * accBytes * (f % plan_.slots), planeElements(plan_) * accBytes);
             rec.barrier();
         }
