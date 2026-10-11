@@ -1505,6 +1505,12 @@ public:
         }
     }
 
+    // Forgets frame n once its request ends without temporalFrame returning it, so that the ring no longer emits it.
+    void forget(int n) noexcept {
+        pending_.erase(n);
+        emitted_.erase(n);
+    }
+
     // Sigma and th_mse are normalized by the matrix, so opponent color space input must be filtered with matrix=100.
     void checkMatrix(int n, VSFrameContext* frameCtx) const {
         if (params_.matrix == matrixOPP)
@@ -1834,15 +1840,16 @@ const VSFrame* VS_CC filterGetFrame(int n, int activationReason, void* instanceD
             d.request(n, frameCtx);
             return nullptr;
         }
-        if (activationReason != arAllFramesReady)
-            return nullptr;
-        d.checkMatrix(n, frameCtx);
-        return (d.temporal() ? d.temporalFrame(n, frameCtx, core) : d.spatialFrame(n, frameCtx, core)).release();
+        if (activationReason == arAllFramesReady) {
+            d.checkMatrix(n, frameCtx);
+            return (d.temporal() ? d.temporalFrame(n, frameCtx, core) : d.spatialFrame(n, frameCtx, core)).release();
+        }
     } catch (const std::exception& e) {
         vsapi->setFilterError(e.what(), frameCtx);
     } catch (...) {
         vsapi->setFilterError("BM3D: unknown error", frameCtx);
     }
+    d.forget(n);
     return nullptr;
 }
 
