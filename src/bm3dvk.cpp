@@ -708,9 +708,9 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // Row-major slots of a lane lie SG apart: SG / pitch rows down and SG % pitch columns across, or a row further and
     // pitch - SG % pitch columns back, the nearer at the squared distance laneSpacing. Diagonal neighbours there would
     // have correlated distances (see blockMatch).
-    const auto laneSpacing = [sg](int pitch) {
-        const int down = sg / pitch;
-        const int across = sg % pitch;
+    const auto laneSpacing = [sg](int64_t pitch) {
+        const int64_t down = sg / pitch;
+        const int64_t across = sg % pitch;
         return std::min(down * down + across * across, (down + 1) * (down + 1) + (pitch - across) * (pitch - across));
     };
     // A spatial search wider than a subgroup is keyed by slot (see selectSlots), its rows padded until a lane's slots lie
