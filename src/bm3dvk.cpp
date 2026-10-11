@@ -89,7 +89,6 @@ constexpr uint32_t preferredSubgroupSize = 32;
 constexpr int64_t globalGroupBudget = int64_t{512} << 20;
 constexpr int64_t matchBudget = int64_t{256} << 20;
 constexpr uint32_t maxBindings = 7;
-constexpr int64_t matchBytes = sizeof(uint32_t) * 2; // uvec2 (packed position, window frame)
 constexpr int64_t countBytes = sizeof(uint32_t);
 constexpr int64_t accBytes = sizeof(float) * 2; // numerator and denominator per pixel
 
@@ -612,6 +611,11 @@ int64_t batchRefs(const Plan& plan) {
     return int64_t{plan.batchRows} * plan.refCols;
 }
 
+// A group member (MATCH_T in shaders.h): packed position, and window frame when filtering temporally.
+int64_t matchBytes(const Params& p) {
+    return sizeof(uint32_t) * (p.radius > 0 ? 2 : 1);
+}
+
 // A window buffer of `frames` planes. Full-search items of several columns read up to (NX_FULL - 1) * BM_STEP samples past the right edge, past the last plane
 // at its last row; only the candidates rejected there take them.
 int64_t windowBytes(const Params& p, const Plan& plan, int frames) {
@@ -828,7 +832,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     }
 
     // Matching and filtering run in batches of whole tile rows of reference blocks, bounded by the size of the matches.
-    const int64_t rowsBudget = std::min(matchBudget, gpu.maxStorageRange) / (int64_t{plan.refCols} * p.groupSize * matchBytes);
+    const int64_t rowsBudget = std::min(matchBudget, gpu.maxStorageRange) / (int64_t{plan.refCols} * p.groupSize * matchBytes(p));
     plan.batchRows = static_cast<int>(std::min<int64_t>(std::max<int64_t>(rowsBudget / plan.tileRefs * plan.tileRefs, plan.tileRefs), plan.refRows));
     plan.filterGroupsX = static_cast<int>(std::min<int64_t>(int64_t{divCeil(plan.batchRows, plan.tileRefs)} * divCeil(plan.refCols, plan.tileRefs),
                                                             gpu.maxGroupCountX));
@@ -1594,7 +1598,7 @@ WorkBuffers Filter::createWorkBuffers(VSCore* core, Keep keep) const {
             work.refWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
         work.acc[plane] = buffer(planeElements(plan_) * accBytes * plan_.slots);
     }
-    work.matches = buffer(batchRefs(plan_) * params_.groupSize * matchBytes);
+    work.matches = buffer(batchRefs(plan_) * params_.groupSize * matchBytes(params_));
     work.counts = buffer(batchRefs(plan_) * countBytes);
     if (plan_.globalGroup)
         work.scratch = buffer(plan_.groupBytes * plan_.filterGroupsX * plan_.planes);

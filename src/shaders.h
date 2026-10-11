@@ -17,6 +17,13 @@ inline constexpr std::string_view common = R"glsl(
 #define ACC_T uint
 #endif
 
+// A group member in the matches buffer: its packed position, and its window frame when filtering temporally.
+#if RADIUS > 0
+#define MATCH_T uvec2
+#else
+#define MATCH_T uint
+#endif
+
 uint packPos(ivec2 p) { return (uint(p.y) << 16) | uint(p.x); }
 ivec2 unpackPos(uint p) { return ivec2(p & 0xFFFFu, p >> 16); }
 uint slotOf(uint frame) { return frame % SLOTS; }
@@ -124,13 +131,13 @@ void main() {
 }
 )glsl";
 
-// Block matching: one subgroup per reference block of the batch [refBase, refBase + refCount). Writes the group of each reference block as (position, window
-// frame) pairs, the reference block first, followed by the matches in the order the CPU implementation stacks them.
+// Block matching: one subgroup per reference block of the batch [refBase, refBase + refCount). Writes the group of each reference block as members (see
+// MATCH_T), the reference block first, followed by the matches in the order the CPU implementation stacks them.
 inline constexpr std::string_view blockMatch = R"glsl(
 layout(local_size_x = SG * NSG) in;
 
 layout(set = 0, binding = 0, std430) readonly buffer Win { STORE_T data[]; } win;
-layout(set = 0, binding = 1, std430) writeonly buffer Matches { uvec2 entries[]; } matches;
+layout(set = 0, binding = 1, std430) writeonly buffer Matches { MATCH_T entries[]; } matches;
 layout(set = 0, binding = 2, std430) writeonly buffer Counts { uint counts[]; } counts;
 
 layout(push_constant) uniform Push {
@@ -934,7 +941,11 @@ void main() {
         const ivec2 refPos = refPosition(ref / REF_COLS, ref % REF_COLS);
         const uint out0 = slot * GROUP;
         if (lane == 0)
+#if RADIUS > 0
             matches.entries[out0] = uvec2(packPos(refPos), pc.cur);
+#else
+            matches.entries[out0] = packPos(refPos);
+#endif
 #if NO_MATCHING
         if (lane == 0)
             counts.counts[slot] = 1;
@@ -971,7 +982,7 @@ void main() {
         const uint n = search(curOffset, true, refPos, GROUP - 1, 1, 0, fullCut);
 #if RADIUS == 0
         for (uint i = lane; i < n; i += SG)
-            matches.entries[out0 + 1 + i] = uvec2(listK[sg][i], 0);
+            matches.entries[out0 + 1 + i] = listK[sg][i];
         if (lane == 0)
             counts.counts[slot] = n + 1;
 #else
@@ -1036,7 +1047,7 @@ layout(set = 0, binding = 0, std430) readonly buffer SrcWin { STORE_T data[]; } 
 #if WIENER
 layout(set = 0, binding = 1, std430) readonly buffer RefWin { STORE_T data[]; } refWin[PLANES];
 #endif
-layout(set = 0, binding = 2, std430) readonly buffer Matches { uvec2 entries[]; } matches;
+layout(set = 0, binding = 2, std430) readonly buffer Matches { MATCH_T entries[]; } matches;
 layout(set = 0, binding = 3, std430) readonly buffer Counts { uint counts[]; } counts;
 layout(set = 0, binding = 4, std430) buffer Acc { ACC_T data[]; } acc[PLANES];
 #if GLOBAL_GROUP
@@ -1096,7 +1107,11 @@ uint groupSlot;
 
 // Position and window frame of member z of the current group.
 uvec2 member(uint z) {
+#if RADIUS > 0
     return matches.entries[groupSlot * GROUP + z];
+#else
+    return uvec2(matches.entries[groupSlot * GROUP + z], 0u);
+#endif
 }
 
 // Thresholds (basic) or noise variances (Wiener) of the plane, indexed by the number of zero frequency axes.
