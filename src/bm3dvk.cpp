@@ -210,6 +210,7 @@ struct Gpu {
     int64_t maxSharedMemory{};
     int maxGroupCountX{};
     int64_t maxStorageRange{};
+    uint32_t maxStorageBuffers{};
 };
 
 bool hasDeviceExtension(const Gpu& gpu, std::string_view name) {
@@ -231,7 +232,8 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     if (!gpu.vk)
         fail(err.data());
 
-    VkPhysicalDeviceVulkan13Properties props13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+    VkPhysicalDeviceVulkan11Properties props11{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
+    VkPhysicalDeviceVulkan13Properties props13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, .pNext = &props11};
     VkPhysicalDeviceProperties2 props{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &props13};
     gpu.vk->vkGetPhysicalDeviceProperties2(gpu.handles.physicalDevice, &props);
 
@@ -244,6 +246,9 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
 
     if ((props13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) == 0)
         fail("the device cannot pin the subgroup size of compute shaders");
+    constexpr VkSubgroupFeatureFlags subgroupOps = VK_SUBGROUP_FEATURE_ARITHMETIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT;
+    if ((props11.subgroupSupportedOperations & subgroupOps) != subgroupOps)
+        fail("the device lacks subgroup arithmetic, ballot or shuffle operations");
 
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
     gpu.vendorId = props.properties.vendorID;
@@ -258,6 +263,7 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     gpu.maxSharedMemory = limits.maxComputeSharedMemorySize;
     gpu.maxGroupCountX = static_cast<int>(std::min<uint32_t>(limits.maxComputeWorkGroupCount[0], std::numeric_limits<int>::max()));
     gpu.maxStorageRange = limits.maxStorageBufferRange;
+    gpu.maxStorageBuffers = limits.maxPerStageDescriptorStorageBuffers;
     return gpu;
 }
 
@@ -1086,9 +1092,14 @@ struct KernelSpec {
 Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
     const VkDevice device = gpu.handles.device;
     std::vector<VkDescriptorSetLayoutBinding> bindings;
-    for (const BindingLayout& b : spec.layout)
+    uint32_t descriptors{};
+    for (const BindingLayout& b : spec.layout) {
         bindings.push_back({.binding = b.binding, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = b.count,
                             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+        descriptors += b.count;
+    }
+    if (descriptors > gpu.maxStorageBuffers)
+        fail("the device supports too few storage buffers per shader stage");
     const VkDescriptorSetLayoutCreateInfo setInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                                   .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT,
                                                   .bindingCount = static_cast<uint32_t>(bindings.size()),
