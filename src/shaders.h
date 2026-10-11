@@ -6,7 +6,7 @@
 // GLSL kernels. Each is completed by a preamble of #defines built per filter instance; see buildPreamble in bm3dvk.cpp.
 namespace shader {
 
-// Shared by every kernel: element types, float atomics and the window/accumulator addressing.
+// Shared by every kernel: element types, float atomics, the window/accumulator addressing and the reference block grid.
 inline constexpr std::string_view common = R"glsl(
 #define PLANE_SIZE (WIDTH * HEIGHT)
 #define INF uintBitsToFloat(0x7F800000u)
@@ -20,6 +20,7 @@ inline constexpr std::string_view common = R"glsl(
 uint packPos(ivec2 p) { return (uint(p.y) << 16) | uint(p.x); }
 ivec2 unpackPos(uint p) { return ivec2(p & 0xFFFFu, p >> 16); }
 uint slotOf(uint frame) { return frame % SLOTS; }
+ivec2 refPosition(uint row, uint col) { return min(ivec2(col, row) * BLOCK_STEP, ivec2(WIDTH, HEIGHT) - BLOCK); }
 )glsl";
 
 // RGB -> OPP (or a plain copy for Gray) from frame planes into one slot of a window.
@@ -930,7 +931,7 @@ void main() {
 
     for (uint slot = gl_WorkGroupID.x * NSG + sg; slot < pc.refCount; slot += gl_NumWorkGroups.x * NSG) {
         const uint ref = pc.refBase + slot;
-        const ivec2 refPos = ivec2(min(int(ref % REF_COLS) * BLOCK_STEP, WIDTH - BLOCK), min(int(ref / REF_COLS) * BLOCK_STEP, HEIGHT - BLOCK));
+        const ivec2 refPos = refPosition(ref / REF_COLS, ref % REF_COLS);
         const uint out0 = slot * GROUP;
         if (lane == 0)
             matches.entries[out0] = uvec2(packPos(refPos), pc.cur);
@@ -1118,18 +1119,14 @@ void accumulate(uint i, float v) {
 // The numerator of the reference frame around the tile of reference blocks the workgroup processes, which holds every block the full search can match:
 // estimates accumulate here and reach memory in one pass per tile. Without ACC_TILE the tile would not fit into shared memory and every estimate goes to memory
 // directly.
-#if !ACC_TILE
-#define TILE_H 1
-#define TILE_W 1
-#endif
 // The tile holds fixed point sums of 26 fraction bits: integer atomics are native in shared memory, where float ones may be emulated. Values out of range go to
 // memory directly, and so does the 2^32 a wrapping addition loses. So do groups weighted below 2^16 units, which keeps the error rounding adds to an estimate
 // within 2^-17.
 #define TILE_SCALE 67108864.0
+#if ACC_TILE
+shared int tileNum[TILE_SPAN * TILE_SPAN];
 ivec2 tileOrigin;
 ivec2 tileSize;
-#if ACC_TILE
-shared int tileNum[TILE_H * TILE_W];
 bool groupInTile;
 
 void accumulateTile(uint t, uint i, float v) {
@@ -1412,10 +1409,10 @@ void accumulatePair(uint z, uint p, uint x, vec2 v) {
     const uint i = slotOf(frame) * PLANE_SIZE * 2 + uint(pos.y) * WIDTH + uint(pos.x);
 #if ACC_TILE
     if (frame == pc.firstFrame + pc.cur && groupInTile) {
-        const uint t = uint(pos.y - tileOrigin.y) * TILE_W + uint(pos.x - tileOrigin.x);
+        const uint t = uint(pos.y - tileOrigin.y) * TILE_SPAN + uint(pos.x - tileOrigin.x);
         accumulateTile(t, i, v.x);
         if (p * 2 + 1 < BLOCK)
-            accumulateTile(t + TILE_W, i + WIDTH, v.y);
+            accumulateTile(t + TILE_SPAN, i + WIDTH, v.y);
         return;
     }
 #endif
@@ -1511,10 +1508,6 @@ void filterGroup(uint slot) {
     SYNC();
 }
 
-ivec2 refPosition(uint row, uint col) {
-    return min(ivec2(col, row) * BLOCK_STEP, ivec2(WIDTH, HEIGHT) - BLOCK);
-}
-
 void main() {
     plane = gl_WorkGroupID.y;
     float coefTable[PLANES * 4] = float[](COEF_TABLE);
@@ -1524,19 +1517,21 @@ void main() {
     groupBase = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * BUF_T * (PINGPONG + 1);
 #endif
 
-    const uint tilesX = (REF_COLS + TILE_COLS - 1) / TILE_COLS;
-    const uint numTiles = (pc.refRows + TILE_ROWS - 1) / TILE_ROWS * tilesX;
+    const uint tilesX = (REF_COLS + TILE_REFS - 1) / TILE_REFS;
+    const uint numTiles = (pc.refRows + TILE_REFS - 1) / TILE_REFS * tilesX;
+#if ACC_TILE
     const uint numFrame = pc.firstFrame + pc.cur;
     const bool tileAccumulates = accumulates(numFrame);
+#endif
     for (uint tile = gl_WorkGroupID.x; tile < numTiles; tile += gl_NumWorkGroups.x) {
-        const uint row0 = pc.refRow0 + tile / tilesX * TILE_ROWS;
-        const uint col0 = tile % tilesX * TILE_COLS;
-        const uint row1 = min(row0 + TILE_ROWS, pc.refRow0 + pc.refRows);
-        const uint col1 = min(col0 + TILE_COLS, REF_COLS);
+        const uint row0 = pc.refRow0 + tile / tilesX * TILE_REFS;
+        const uint col0 = tile % tilesX * TILE_REFS;
+        const uint row1 = min(row0 + TILE_REFS, pc.refRow0 + pc.refRows);
+        const uint col1 = min(col0 + TILE_REFS, REF_COLS);
+#if ACC_TILE
         tileOrigin = max(refPosition(row0, col0) - SEARCH_MARGIN, ivec2(0));
         tileSize = min(refPosition(row1 - 1, col1 - 1) + BLOCK + SEARCH_MARGIN, ivec2(WIDTH, HEIGHT)) - tileOrigin;
-#if ACC_TILE
-        for (uint i = gl_LocalInvocationIndex; i < TILE_H * TILE_W; i += WG)
+        for (uint i = gl_LocalInvocationIndex; i < TILE_SPAN * TILE_SPAN; i += WG)
             tileNum[i] = 0;
         SYNC();
 #endif
@@ -1550,7 +1545,7 @@ void main() {
             const uint base = slotOf(numFrame) * PLANE_SIZE * 2;
             for (uint i = gl_LocalInvocationIndex; i < uint(tileSize.x * tileSize.y); i += WG) {
                 const ivec2 q = ivec2(i % uint(tileSize.x), i / uint(tileSize.x));
-                const float v = tileValue(uint(q.y) * TILE_W + uint(q.x));
+                const float v = tileValue(uint(q.y) * TILE_SPAN + uint(q.x));
                 if (v != 0.0)
                     accumulate(base + uint(tileOrigin.y + q.y) * WIDTH + uint(tileOrigin.x + q.x), v);
             }
