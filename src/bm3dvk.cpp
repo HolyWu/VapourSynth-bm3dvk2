@@ -726,6 +726,11 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.fullPitch = plan.fullCols;
     while (plan.bmSlotKeys && laneSpacing(plan.fullPitch) < std::min(bmSpatialLaneSpacing, sg * sg))
         ++plan.fullPitch;
+    // Slot keys need a single chunk: where only the padding keeps the search from fitting one, the general merge takes it unpadded.
+    if (int64_t{plan.fullPitch} * plan.fullRows > bmChunkMax && int64_t{plan.fullCols} * plan.fullRows <= bmChunkMax) {
+        plan.bmSlotKeys = false;
+        plan.fullPitch = plan.fullCols;
+    }
     // A single chunk holds the candidates of every search without item padding, and stages the merges of the rest set in its first 4 * GROUP words; shared
     // memory bounds how many workgroups an SM runs, so every word counts.
     const int64_t list = int64_t{p.groupSize} * sizeof(uint32_t);
