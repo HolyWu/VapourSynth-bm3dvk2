@@ -91,7 +91,8 @@ constexpr int64_t globalGroupBudget = int64_t{128} << 20;
 constexpr int64_t matchBudget = int64_t{256} << 20;
 constexpr uint32_t maxBindings = 7;
 constexpr int64_t countBytes = sizeof(uint32_t);
-constexpr int64_t accBytes = sizeof(float) * 2; // numerator and denominator per pixel
+constexpr int64_t accPlanes = 2; // numerator and denominator per pixel
+constexpr int64_t accBytes = sizeof(float) * accPlanes;
 
 // Descriptor bindings, as declared by the kernels in shaders.h.
 constexpr uint32_t bindIn = 0;
@@ -904,6 +905,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"WIDTH", std::to_string(plan.width)},
         {"HEIGHT", std::to_string(plan.height)},
         {"PLANES", std::to_string(plan.planes)},
+        {"ACC_PLANES", std::to_string(accPlanes)},
         {"ACTIVE_PLANES", activePlanes},
         {"ACTIVE_MASK", std::to_string(activeMask)},
         {"STORE_T", plan.fp16Input ? "float16_t" : "float"},
@@ -1719,7 +1721,7 @@ void Filter::recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFra
     const std::array bindings{bindBuffers(bindIn, work.acc, plan_.planes), bindBuffers(bindOut, framePlanes(*gpu_.vkapi, dst, plan_.planes), plan_.planes),
                               bindBuffers(bindSrcWindow, work.srcWindow, plan_.planes)};
     const NormalizePush push{.dstStride = elementStride(*vsapi_, dst),
-                             .accOffset = static_cast<uint32_t>(planeElements(plan_) * 2 * (frame % plan_.slots)),
+                             .accOffset = static_cast<uint32_t>(planeElements(plan_) * accPlanes * (frame % plan_.slots)),
                              .srcOffset = static_cast<uint32_t>(planeElements(plan_) * (frame % plan_.slots))};
     rec.dispatch(normalize_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
 }

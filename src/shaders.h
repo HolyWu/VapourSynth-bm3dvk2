@@ -9,6 +9,8 @@ namespace shader {
 // Shared by every kernel: element types, float atomics, the window/accumulator addressing and the reference block grid.
 inline constexpr std::string_view common = R"glsl(
 #define PLANE_SIZE (WIDTH * HEIGHT)
+// Elements of an accumulator slot: the numerator plane, then the denominator plane.
+#define ACC_SLOT (PLANE_SIZE * ACC_PLANES)
 #define INF uintBitsToFloat(0x7F800000u)
 
 #if FLOAT_ATOMICS
@@ -1434,7 +1436,7 @@ void accumulatePair(uint z, uint p, uint x, vec2 v) {
     if (!accumulates(frame))
         return;
     const ivec2 pos = unpackPos(m.x) + ivec2(x, p * 2);
-    const uint i = slotOf(frame) * PLANE_SIZE * 2 + uint(pos.y) * WIDTH + uint(pos.x);
+    const uint i = slotOf(frame) * ACC_SLOT + uint(pos.y) * WIDTH + uint(pos.x);
 #if ACC_TILE
     if (frame == pc.firstFrame + pc.cur && groupInTile) {
         const uint t = uint(pos.y - tileOrigin.y) * TILE_SPAN + uint(pos.x - tileOrigin.x);
@@ -1461,7 +1463,7 @@ void aggregate(uint k, float numWeight, float denWeight) {
         const uint frame = pc.firstFrame + m.y;
         const ivec2 pos = unpackPos(m.x);
         if (accumulates(frame))
-            accumulate(slotOf(frame) * PLANE_SIZE * 2 + PLANE_SIZE + uint(pos.y) * WIDTH + uint(pos.x), denWeight);
+            accumulate(slotOf(frame) * ACC_SLOT + PLANE_SIZE + uint(pos.y) * WIDTH + uint(pos.x), denWeight);
     }
 #if BLOCK <= MAX_CODELET
     rowPass(k, 1, true);
@@ -1571,7 +1573,7 @@ void main() {
 
 #if ACC_TILE
         if (tileAccumulates) {
-            const uint base = slotOf(numFrame) * PLANE_SIZE * 2;
+            const uint base = slotOf(numFrame) * ACC_SLOT;
             for (uint i = gl_LocalInvocationIndex; i < uint(tileSize.x * tileSize.y); i += WG) {
                 const ivec2 q = ivec2(i % uint(tileSize.x), i / uint(tileSize.x));
                 const float v = tileValue(uint(q.y) * TILE_SPAN + uint(q.x));
