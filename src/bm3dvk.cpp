@@ -573,6 +573,7 @@ struct Plan {
     int planes{};
     std::vector<int> activePlanes;
     bool fp16Input{};
+    bool fp16Math{};
     int slots{};
     int blockPadded{};
     int groupSwizzle{};
@@ -684,7 +685,9 @@ std::pair<int, int> itemShape(int cols, int rows, int windows, int step, int blo
 }
 
 Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
-    Plan plan{.width = vi.width, .height = vi.height, .planes = vi.format.numPlanes, .fp16Input = vi.format.bitsPerSample == 16, .slots = p.radius * 2 + 1};
+    const bool fp16Input = vi.format.bitsPerSample == 16;
+    Plan plan{.width = vi.width, .height = vi.height, .planes = vi.format.numPlanes, .fp16Input = fp16Input, .fp16Math = gpu.fp16Math && fp16Input,
+              .slots = p.radius * 2 + 1};
 
     plan.refCols = divCeil(vi.width - p.blockSize, p.blockStep) + 1;
     plan.refRows = divCeil(vi.height - p.blockSize, p.blockStep) + 1;
@@ -811,7 +814,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
                                                std::max(filterWorkgroupMin, sg), std::max(filterWorkgroupMax, sg)),
                                     gpu.maxWorkgroup);
     plan.pingpong = p.blockSize > dct::maxCodeletSize || p.groupSize > dct::maxCodeletSize;
-    const int elementBytes = gpu.fp16Math && plan.fp16Input ? 4 : 8;
+    const int elementBytes = plan.fp16Math ? 4 : 8;
     plan.blockPadded = 2 * halfBlock + (elementBytes == 8 ? 1 : 0);
     plan.groupBytes = int64_t{p.groupSize} * halfBlock * plan.blockPadded * elementBytes * (p.wiener ? 2 : 1) * (plan.pingpong ? 2 : 1);
     // Wiener groups with a codelet z-pass keep the subgroup sums of the shrinkage in their own data unless the group is in memory (see STAT_IN_REF).
@@ -869,7 +872,7 @@ std::string floatBits(float v) {
 }
 
 std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
-    const bool fp16Math = gpu.fp16Math && plan.fp16Input;
+    const bool fp16Math = plan.fp16Math;
     std::string s = "#version 460\n"
                     "#extension GL_EXT_shader_16bit_storage : require\n"
                     "#extension GL_KHR_shader_subgroup_basic : require\n"
@@ -1459,7 +1462,7 @@ public:
           plan_{makePlan(params_, vi_, gpu_)}, preamble_{buildPreamble(params_, plan_, gpu_)},
           convert_{createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false})},
           blockMatch_{createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true})},
-          filter_{createKernel(gpu_, core, {"BM3D filter", filterSource(params_, preamble_, !(gpu_.fp16Math && plan_.fp16Input)),
+          filter_{createKernel(gpu_, core, {"BM3D filter", filterSource(params_, preamble_, !plan_.fp16Math),
                                             filterLayout(params_, plan_), sizeof(FilterPush), true})},
           normalize_{createKernel(gpu_, core,
                                   {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false})},
