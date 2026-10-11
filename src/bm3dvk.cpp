@@ -1448,7 +1448,7 @@ public:
 
     void request(int n, VSFrameContext* frameCtx) const {
         const int lo = std::max(n - params_.radius * 2, 0);
-        const int hi = std::min(n + params_.radius * 2, vi_.numFrames - 1);
+        const int hi = n + std::min(params_.radius * 2, vi_.numFrames - 1 - n);
         for (int f = lo; f <= hi; ++f) {
             vsapi_->requestFrameFilter(f, node_.get(), frameCtx);
             if (refNode_)
@@ -1723,7 +1723,7 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
 
     const int radius = params_.radius;
     const int last = vi_.numFrames - 1;
-    const Sources sources = getSources(std::max(n - radius * 2, 0), std::min(n + radius * 2, last), frameCtx);
+    const Sources sources = getSources(std::max(n - radius * 2, 0), n + std::min(radius * 2, last - n), frameCtx);
 
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
@@ -1735,12 +1735,12 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
     std::vector<std::pair<int, OutFramePtr>> frames;
     while (cursor.emittedUpTo <= n) {
         const int m = cursor.nextRef++;
-        for (; cursor.convertedUpTo <= std::min(m + radius, last); ++cursor.convertedUpTo)
+        for (; cursor.convertedUpTo <= m + std::min(radius, last - m); ++cursor.convertedUpTo)
             recordConvert(rec, ctx, persistent_, sources, cursor.convertedUpTo);
         rec.barrier();
 
         const int firstFrame = std::max(m - radius, 0);
-        const int lastFrame = std::min(m + radius, last);
+        const int lastFrame = m + std::min(radius, last - m);
         recordStep(rec, persistent_,
                    {.firstFrame = firstFrame, .numFrames = lastFrame - firstFrame + 1, .cur = m - firstFrame,
                     .activeLo = std::max(firstFrame, cursor.firstComplete), .activeHi = lastFrame});
