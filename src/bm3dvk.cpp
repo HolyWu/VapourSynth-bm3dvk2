@@ -1597,8 +1597,12 @@ void Filter::uploadCosTable(VSCore* core) {
     const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &memoryBarrier};
     gpu_.vk->vkCmdPipelineBarrier2(ctx.commandBuffer(), &dependency);
     ctx.submit();
-    if (gpu_.vkapi->gpuExecPoolWaitIdle(pool_.get(), err.data(), errorSize) != gdDrained)
+    if (const int drained = gpu_.vkapi->gpuExecPoolWaitIdle(pool_.get(), err.data(), errorSize); drained != gdDrained) {
+        // A copy that may still be running keeps its destination: the table is leaked rather than destroyed.
+        if (!vsGPUDrainSafeToDestroy(drained))
+            cosTable_.owner.release();
         fail(err.data());
+    }
 }
 
 // The working buffers for plan_.slots frames, each handed to keep, which takes ownership and returns its handle.
