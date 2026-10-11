@@ -89,7 +89,6 @@ constexpr double filterTileGain = 10.0;   // least ratio of estimates accumulate
 constexpr int64_t filterTileWorkgroups = 3; // least workgroups per SM a tile may leave where more would run without it
 constexpr int64_t filterTileWorkgroupsBasic = 2; // the same for basic estimates, without a reference group (measured)
 constexpr uint32_t preferredSubgroupSize = 32;
-constexpr uint32_t vendorNvidia = 0x10DE;
 constexpr int64_t globalGroupBudget = int64_t{512} << 20;
 constexpr int64_t matchBudget = int64_t{256} << 20;
 constexpr uint32_t maxBindings = 7;
@@ -202,7 +201,7 @@ struct Gpu {
     const VSVULKANAPI* vkapi{};
     const VSVulkanFunctions* vk{};
     VSVulkanCoreHandles handles{};
-    uint32_t vendorId{};
+    bool nvidiaDriver{};
     bool fp16Math{};
     bool floatAtomics{};
     uint32_t subgroupSize{};
@@ -233,7 +232,8 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
         fail(err.data());
 
     VkPhysicalDeviceVulkan11Properties props11{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
-    VkPhysicalDeviceVulkan13Properties props13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, .pNext = &props11};
+    VkPhysicalDeviceVulkan12Properties props12{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES, .pNext = &props11};
+    VkPhysicalDeviceVulkan13Properties props13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, .pNext = &props12};
     VkPhysicalDeviceProperties2 props{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &props13};
     gpu.vk->vkGetPhysicalDeviceProperties2(gpu.handles.physicalDevice, &props);
 
@@ -251,7 +251,7 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
         fail("the device lacks subgroup arithmetic, ballot or shuffle operations");
 
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
-    gpu.vendorId = props.properties.vendorID;
+    gpu.nvidiaDriver = props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
     gpu.fp16Math = features12.shaderFloat16 == VK_TRUE;
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
     gpu.subgroupSize = std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize);
@@ -753,7 +753,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // selection network needs (measured). Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers;
     // RADV indexes it through branch ladders and AMD's Windows compiler through scratch memory, both far slower than
     // shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
-    plan.bmRefInRegs = gpu.vendorId == vendorNvidia && p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
+    plan.bmRefInRegs = gpu.nvidiaDriver &&p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
     const auto bmShared = [&](int subgroups, int64_t chunk, bool singleChunk) {
         const int64_t perSubgroup = (plan.bmRefInRegs ? 0 : int64_t{p.blockSize} * divCeil(p.blockSize, 4) * 4 * sizeof(float)) +
                                     int64_t{plan.bmWindows} * 4 * sizeof(uint32_t) + chunk * sizeof(uint32_t) +
@@ -917,7 +917,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"PS_ROWS", std::to_string(plan.psRows)},
         {"PS_UNION", plan.psUnion ? "1" : "0"},
         {"REF_IN_REGS", plan.bmRefInRegs ? "1" : "0"},
-        {"WHOLE_ROW_LOADS", gpu.vendorId != vendorNvidia ? "1" : "0"},
+        {"WHOLE_ROW_LOADS", gpu.nvidiaDriver ? "0" : "1"},
         {"SSD_CORRELATION", plan.bmCorrelation ? "1" : "0"},
         {"CHUNK", std::to_string(plan.bmChunk)},
         {"SINGLE_CHUNK", plan.bmSingleChunk ? "1" : "0"},
