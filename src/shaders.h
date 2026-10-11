@@ -1334,7 +1334,8 @@ void colPass(uint k, uint numGroups, bool inverse) {
     }
 }
 #else
-// Out of place matrix forms of the passes, src -> dst, for block sizes without a codelet.
+// Out of place matrix forms of the passes, src -> dst, for block sizes without a codelet. Like the matrix z-pass and aggregate, they sum in single
+// precision even for half precision groups: half precision sums of so many terms lose up to 11 dB against the CPU (block_size=64) for at most 5% speed.
 void rowPass(uint k, uint numGroups, bool inverse, uint src, uint dst) {
     for (uint e = gl_LocalInvocationIndex; e < numGroups * k * HB * BLOCK; e += WG) {
         const uint m = e % BLOCK;
