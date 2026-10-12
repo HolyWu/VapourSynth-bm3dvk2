@@ -792,8 +792,9 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     };
     plan.fullRowMajor = plan.bmSlotKeys || laneSpacing(plan.fullPitch) > 2;
     plan.psRowMajor = laneSpacing(plan.psCols) > 2;
-    // Distances in correlation form take the reference block offset by its mean, which pays off where the block is read from shared memory; one in registers,
-    // which the compiler reads again from the window instead, does not (measured).
+    // Distances in correlation form take the reference block offset by its mean, which pays off for blocks larger than bmRefInRegsMax, always read from shared
+    // memory. Smaller blocks keep plain differences wherever their reference lives: one in registers, which the compiler reads again from the window instead,
+    // loses with it (measured).
     plan.bmCorrelation = p.blockSize > bmRefInRegsMax;
     plan.bmSubgroups = std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);
     plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
