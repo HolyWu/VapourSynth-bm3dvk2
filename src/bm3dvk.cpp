@@ -624,6 +624,11 @@ int64_t planeElements(const Plan& plan) {
     return int64_t{plan.width} * plan.height;
 }
 
+// An accumulator slot (ACC_SLOT in shaders.h): the numerator plane, then the denominator plane.
+int64_t accSlotBytes(const Plan& plan) {
+    return planeElements(plan) * accBytes;
+}
+
 int64_t batchRefs(const Plan& plan) {
     return int64_t{plan.batchRows} * plan.refCols;
 }
@@ -1066,7 +1071,7 @@ std::string filterSource(const Params& p, const std::string& preamble, bool scal
 // Push constant blocks, laid out as declared by the kernels in shaders.h.
 struct ConvertPush {
     uint32_t srcStride{};
-    uint32_t dstOffset{};
+    uint32_t frame{};
 };
 
 struct BlockMatchPush {
@@ -1088,8 +1093,7 @@ struct FilterPush {
 
 struct NormalizePush {
     uint32_t dstStride{};
-    uint32_t accOffset{};
-    uint32_t srcOffset{};
+    uint32_t frame{};
 };
 
 template <typename T>
@@ -1098,7 +1102,7 @@ concept PushConstants = std::is_trivially_copyable_v<T> && std::is_standard_layo
 static_assert(PushConstants<ConvertPush> && sizeof(ConvertPush) == 8);
 static_assert(PushConstants<BlockMatchPush> && sizeof(BlockMatchPush) == 20);
 static_assert(PushConstants<FilterPush> && sizeof(FilterPush) == 24);
-static_assert(PushConstants<NormalizePush> && sizeof(NormalizePush) == 12);
+static_assert(PushConstants<NormalizePush> && sizeof(NormalizePush) == 8);
 
 struct BindingLayout {
     uint32_t binding{};
@@ -1680,7 +1684,7 @@ WorkBuffers Filter::createWorkBuffers(VSCore* core, Keep keep) const {
     }
     // Planes left unfiltered get no accumulator: their descriptors take that of a filtered plane, which no kernel touches for them.
     for (const int plane : plan_.activePlanes)
-        work.acc[plane] = buffer(planeElements(plan_) * accBytes * plan_.slots);
+        work.acc[plane] = buffer(accSlotBytes(plan_) * plan_.slots);
     for (int plane = 0; plane < plan_.planes; ++plane)
         if (work.acc[plane] == VK_NULL_HANDLE)
             work.acc[plane] = work.acc[plan_.activePlanes.front()];
@@ -1693,11 +1697,10 @@ WorkBuffers Filter::createWorkBuffers(VSCore* core, Keep keep) const {
 
 // Converts source frame `frame` into its window slot.
 void Filter::recordConvert(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, const Sources& sources, int frame) const {
-    const auto offset = static_cast<uint32_t>(planeElements(plan_) * (frame % plan_.slots));
     const auto convertOne = [&](const VSFrame* src, const PlaneBuffers& window) {
         ctx.reads(src);
         const std::array bindings{bindBuffers(bindIn, framePlanes(*gpu_.vkapi, src, plan_.planes), plan_.planes), bindBuffers(bindOut, window, plan_.planes)};
-        rec.dispatch(convert_, bindings, ConvertPush{.srcStride = elementStride(*vsapi_, src), .dstOffset = offset},
+        rec.dispatch(convert_, bindings, ConvertPush{.srcStride = elementStride(*vsapi_, src), .frame = static_cast<uint32_t>(frame)},
                      {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
     };
     convertOne(sources.src[frame - sources.lo].get(), work.srcWindow);
@@ -1738,9 +1741,7 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
 void Filter::recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const {
     const std::array bindings{bindBuffers(bindIn, work.acc, plan_.planes), bindBuffers(bindOut, framePlanes(*gpu_.vkapi, dst, plan_.planes), plan_.planes),
                               bindBuffers(bindSrcWindow, work.srcWindow, plan_.planes)};
-    const NormalizePush push{.dstStride = elementStride(*vsapi_, dst),
-                             .accOffset = static_cast<uint32_t>(planeElements(plan_) * accPlanes * (frame % plan_.slots)),
-                             .srcOffset = static_cast<uint32_t>(planeElements(plan_) * (frame % plan_.slots))};
+    const NormalizePush push{.dstStride = elementStride(*vsapi_, dst), .frame = static_cast<uint32_t>(frame)};
     rec.dispatch(normalize_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
 }
 
@@ -1759,7 +1760,7 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
     const WorkBuffers work = createWorkBuffers(core, [&ctx](GpuBuffer&& buffer) { return ctx.retain(std::move(buffer)); });
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
     for (const int plane : plan_.activePlanes)
-        rec.zero(work.acc[plane], 0, planeElements(plan_) * accBytes);
+        rec.zero(work.acc[plane], 0, accSlotBytes(plan_));
     recordConvert(rec, ctx, work, sources, n);
     rec.barrier();
     recordStep(rec, work, {});
@@ -1778,7 +1779,7 @@ TemporalCursor Filter::restart(const Recorder& rec, int n) const {
     const int first = std::max(n - params_.radius, 0);
     const int firstComplete = first == 0 ? 0 : first + params_.radius;
     for (const int plane : plan_.activePlanes)
-        rec.zero(persistent_.acc[plane], 0, planeElements(plan_) * accBytes * plan_.slots);
+        rec.zero(persistent_.acc[plane], 0, accSlotBytes(plan_) * plan_.slots);
     return {.valid = true, .nextRef = first, .emittedUpTo = firstComplete, .firstComplete = firstComplete,
             .convertedUpTo = std::max(first - params_.radius, 0)};
 }
@@ -1825,7 +1826,7 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
                 frames.emplace_back(f, std::move(dst));
             }
             for (const int plane : plan_.activePlanes)
-                rec.zero(persistent_.acc[plane], planeElements(plan_) * accBytes * (f % plan_.slots), planeElements(plan_) * accBytes);
+                rec.zero(persistent_.acc[plane], accSlotBytes(plan_) * (f % plan_.slots), accSlotBytes(plan_));
             rec.barrier();
         }
     }

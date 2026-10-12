@@ -41,7 +41,7 @@ layout(set = 0, binding = 1, std430) writeonly buffer Dst { STORE_T data[]; } ds
 
 layout(push_constant) uniform Push {
     uint srcStride;
-    uint dstOffset;
+    uint frame;
 } pc;
 
 void main() {
@@ -50,7 +50,7 @@ void main() {
         return;
 
     const uint s = p.y * pc.srcStride + p.x;
-    const uint d = pc.dstOffset + p.y * WIDTH + p.x;
+    const uint d = slotOf(pc.frame) * PLANE_SIZE + p.y * WIDTH + p.x;
 #if PLANES == 3
     const float r = float(src[0].data[s]);
     const float g = float(src[1].data[s]);
@@ -76,8 +76,7 @@ layout(set = 0, binding = 2, std430) readonly buffer SrcWin { STORE_T data[]; } 
 
 layout(push_constant) uniform Push {
     uint dstStride;
-    uint accOffset;
-    uint srcOffset;
+    uint frame;
 } pc;
 
 #define SPAN (IMAGE_TILE + BLOCK - 1)
@@ -95,12 +94,12 @@ float accValue(uint plane, uint i) {
 
 float estimate(uint plane, ivec2 p) {
     if ((uint(ACTIVE_MASK) >> plane & 1u) == 0u)
-        return p.x < WIDTH && p.y < HEIGHT ? float(srcWin[plane].data[pc.srcOffset + uint(p.y) * WIDTH + uint(p.x)]) : 0.0;
+        return p.x < WIDTH && p.y < HEIGHT ? float(srcWin[plane].data[slotOf(pc.frame) * PLANE_SIZE + uint(p.y) * WIDTH + uint(p.x)]) : 0.0;
     const ivec2 origin = ivec2(gl_WorkGroupID.xy) * IMAGE_TILE - (BLOCK - 1);
     for (uint i = gl_LocalInvocationIndex; i < SPAN * SPAN; i += IMAGE_TILE * IMAGE_TILE) {
         const ivec2 q = origin + ivec2(i % SPAN, i / SPAN);
         const bool inside = all(greaterThanEqual(q, ivec2(0))) && q.x < WIDTH && q.y < HEIGHT;
-        blockWeights[i / SPAN][i % SPAN] = inside ? accValue(plane, pc.accOffset + PLANE_SIZE + uint(q.y) * WIDTH + uint(q.x)) : 0.0;
+        blockWeights[i / SPAN][i % SPAN] = inside ? accValue(plane, slotOf(pc.frame) * ACC_SLOT + PLANE_SIZE + uint(q.y) * WIDTH + uint(q.x)) : 0.0;
     }
     barrier();
     for (uint r = gl_LocalInvocationID.y; r < SPAN; r += IMAGE_TILE) {
@@ -115,7 +114,7 @@ float estimate(uint plane, ivec2 p) {
         den += rowSums[gl_LocalInvocationID.y + r][gl_LocalInvocationID.x];
     barrier();
     const bool inside = p.x < WIDTH && p.y < HEIGHT;
-    return inside ? accValue(plane, pc.accOffset + uint(p.y) * WIDTH + uint(p.x)) / den : 0.0;
+    return inside ? accValue(plane, slotOf(pc.frame) * ACC_SLOT + uint(p.y) * WIDTH + uint(p.x)) / den : 0.0;
 }
 
 void main() {
