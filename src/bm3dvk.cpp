@@ -1652,13 +1652,7 @@ void Filter::uploadCosTable(VSCore* core) {
     const VkCopyBufferInfo2 copy{
         .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2, .srcBuffer = src, .dstBuffer = cosTable_.buffer, .regionCount = 1, .pRegions = &region};
     gpu_.vk->vkCmdCopyBuffer2(ctx.commandBuffer(), &copy);
-    const VkMemoryBarrier2 memoryBarrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                                         .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                                         .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                         .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                         .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT};
-    const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &memoryBarrier};
-    gpu_.vk->vkCmdPipelineBarrier2(ctx.commandBuffer(), &dependency);
+    Recorder{gpu_, ctx.commandBuffer(), nullptr}.barrier();
     ctx.submit();
     if (const int drained = gpu_.vkapi->gpuExecPoolWaitIdle(pool_.get(), err.data(), errorSize); drained != gdDrained) {
         // A copy that may still be running keeps its destination: the table is leaked rather than destroyed.
