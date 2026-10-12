@@ -1461,12 +1461,12 @@ struct Step {
 };
 
 // Temporal filtering scatters the estimates of reference frame m into frames m - radius .. m + radius. Accumulators of those frames live in a ring, so each
-// source frame is converted once and each frame is emitted once all of its reference frames have been processed. getFrame runs fmUnordered, which serializes
-// every access to this state.
+// source frame is converted once and each frame is retired once all of its reference frames have been processed, emitted then if it is requested. getFrame runs
+// fmUnordered, which serializes every access to this state.
 struct TemporalCursor {
     bool valid{};
     int nextRef{};
-    int emittedUpTo{};
+    int retiredUpTo{};
     int firstComplete{};
     int convertedUpTo{};
 };
@@ -1767,7 +1767,7 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
 }
 
 bool Filter::canContinue(int n) const {
-    return cursor_.valid && n >= cursor_.emittedUpTo && cursor_.nextRef >= n - params_.radius;
+    return cursor_.valid && n >= cursor_.retiredUpTo && cursor_.nextRef >= n - params_.radius;
 }
 
 // Restarts the ring so that frame n is the first complete one; only frame 0 needs no reference frames before it.
@@ -1776,7 +1776,7 @@ TemporalCursor Filter::restart(const Recorder& rec, int n) const {
     const int firstComplete = first == 0 ? 0 : first + params_.radius;
     for (const int plane : plan_.activePlanes)
         rec.zero(persistent_.acc[plane], 0, accSlotBytes(plan_) * plan_.slots);
-    return {.valid = true, .nextRef = first, .emittedUpTo = firstComplete, .firstComplete = firstComplete,
+    return {.valid = true, .nextRef = first, .retiredUpTo = firstComplete, .firstComplete = firstComplete,
             .convertedUpTo = std::max(first - params_.radius, 0)};
 }
 
@@ -1800,7 +1800,7 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
     cursor_.valid = false;
 
     std::vector<std::pair<int, OutFramePtr>> frames;
-    while (cursor.emittedUpTo <= n) {
+    while (cursor.retiredUpTo <= n) {
         const int m = cursor.nextRef++;
         const auto [firstFrame, lastFrame] = frameSpan(m, radius);
         for (; cursor.convertedUpTo <= lastFrame; ++cursor.convertedUpTo)
@@ -1812,8 +1812,8 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
                     .activeLo = std::max(firstFrame, cursor.firstComplete), .activeHi = lastFrame});
 
         // A frame no request waits for is only cleared from the ring.
-        for (const int retireHi = m == last ? last : m - radius; cursor.emittedUpTo <= retireHi; ++cursor.emittedUpTo) {
-            const int f = cursor.emittedUpTo;
+        for (const int retireHi = m == last ? last : m - radius; cursor.retiredUpTo <= retireHi; ++cursor.retiredUpTo) {
+            const int f = cursor.retiredUpTo;
             if (f == n || pending_.contains(f)) {
                 OutFramePtr dst = newFrame(sources.src[f - sources.lo].get(), core);
                 ctx.writes(dst.get(), plan_.planes);
