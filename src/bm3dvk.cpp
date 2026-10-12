@@ -577,6 +577,7 @@ struct Plan {
     std::vector<int> activePlanes;
     bool fp16Input{};
     bool fp16Math{};
+    bool zScalar{};
     int slots{};
     int blockPadded{};
     int groupSwizzle{};
@@ -696,6 +697,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const bool fp16Input = vi.format.bitsPerSample == 16;
     Plan plan{.width = vi.width, .height = vi.height, .planes = vi.format.numPlanes, .fp16Input = fp16Input, .fp16Math = gpu.fp16Math && fp16Input,
               .slots = p.radius * 2 + 1};
+    // Single precision groups run the codelet z-pass on single lines (Z_SCALAR in shaders.h), which halves the registers a line pair takes.
+    plan.zScalar = !plan.fp16Math;
 
     plan.refCols = divCeil(vi.width - p.blockSize, p.blockStep) + 1;
     plan.refRows = divCeil(vi.height - p.blockSize, p.blockStep) + 1;
@@ -982,7 +985,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"SFMA(a, b, c)", "fma(S(a), b, c)"},
         {"SFMS(a, b, c)", "fma(S(a), b, -(c))"},
         {"SFNMS(a, b, c)", "fma(-S(a), b, c)"},
-        {"Z_SCALAR", fp16Math ? "0" : "1"},
+        {"Z_SCALAR", plan.zScalar ? "1" : "0"},
     };
     for (const auto& [name, value] : defines)
         s += "#define "s.append(name) + " " + value + "\n";
@@ -1483,7 +1486,7 @@ public:
           plan_{makePlan(params_, vi_, gpu_)}, preamble_{buildPreamble(params_, plan_, gpu_)},
           convert_{createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false})},
           blockMatch_{createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true})},
-          filter_{createKernel(gpu_, core, {"BM3D filter", filterSource(params_, preamble_, !plan_.fp16Math),
+          filter_{createKernel(gpu_, core, {"BM3D filter", filterSource(params_, preamble_, plan_.zScalar),
                                             filterLayout(params_, plan_), sizeof(FilterPush), true})},
           normalize_{createKernel(gpu_, core,
                                   {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false})},
