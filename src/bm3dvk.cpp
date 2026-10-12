@@ -991,12 +991,26 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
     return s;
 }
 
+// A codelet, or code calling codelets, on S instead of T: the type T as a whole word becomes S, and the names and FMA macros get scalar spellings.
+std::string scalarCodelet(std::string_view codelet) {
+    std::string s;
+    const auto identifier = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    for (size_t i = 0; i < codelet.size(); ++i) {
+        const bool word = codelet[i] == 'T' && (i == 0 || !identifier(codelet[i - 1])) && (i + 1 == codelet.size() || !identifier(codelet[i + 1]));
+        s += word ? 'S' : codelet[i];
+    }
+    for (const auto& [from, to] :
+         {std::pair{"dct2_"sv, "dct2s_"sv}, {"dct3_"sv, "dct3s_"sv}, {"FMA("sv, "SFMA("sv}, {"FMS("sv, "SFMS("sv}, {"FNMS("sv, "SFNMS("sv}})
+        s = replaceAll(std::move(s), from, to);
+    return s;
+}
+
 // The z-pass of one line pair (T) or one line (S, Z_SCALAR) for every group size with a codelet: forward transform, shrinkage, inverse transform. The Wiener
 // weights are derived from the reference spectrum first and stored in its place, so only one spectrum is live at a time.
 std::string zLineFunction(int groupSize, bool scalar) {
     constexpr std::string_view caseTemplate = R"glsl(
     case @: {
-        ELEM a[@], o[@];
+        T a[@], o[@];
 #if WIENER
         [[unroll]] for (uint z = 0; z < @; ++z)
             a[z] = G(REF_GRP + swizzled(z, off) + z * BLK_T)[C];
@@ -1023,27 +1037,8 @@ std::string zLineFunction(int groupSize, bool scalar) {
     for (int n = 1; n <= std::min(groupSize, dct::maxCodeletSize); ++n)
         s += replaceAll(std::string{caseTemplate}, "@", std::to_string(n));
     s += "    default:\n        break;\n    }\n}\n";
-    s = replaceAll(std::move(s), "ELEM", scalar ? "S" : "T");
     s = replaceAll(std::move(s), "[C]", scalar ? "[row % 2]" : "");
-    if (scalar) {
-        s = replaceAll(std::move(s), "dct2_", "dct2s_");
-        s = replaceAll(std::move(s), "dct3_", "dct3s_");
-    }
-    return s;
-}
-
-// A codelet on S instead of T: the type T as a whole word becomes S, and the names and FMA macros get scalar spellings.
-std::string scalarCodelet(std::string_view codelet) {
-    std::string s;
-    const auto identifier = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
-    for (size_t i = 0; i < codelet.size(); ++i) {
-        const bool word = codelet[i] == 'T' && (i == 0 || !identifier(codelet[i - 1])) && (i + 1 == codelet.size() || !identifier(codelet[i + 1]));
-        s += word ? 'S' : codelet[i];
-    }
-    for (const auto& [from, to] :
-         {std::pair{"dct2_"sv, "dct2s_"sv}, {"dct3_"sv, "dct3s_"sv}, {"FMA("sv, "SFMA("sv}, {"FMS("sv, "SFMS("sv}, {"FNMS("sv, "SFNMS("sv}})
-        s = replaceAll(std::move(s), from, to);
-    return s;
+    return scalar ? scalarCodelet(s) : s;
 }
 
 std::string filterSource(const Params& p, const std::string& preamble, bool scalarZ) {
