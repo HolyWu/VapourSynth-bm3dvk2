@@ -1538,13 +1538,13 @@ public:
     OutFramePtr spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) const;
     OutFramePtr temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core);
 
-    // Waits out every submission; false when they may still be running, so nothing they use may be destroyed.
-    bool drain(VSCore* core) const {
+    // Waits out every submission and returns the VSGPUDrainResult, logging any failure.
+    int drain(VSCore* core) const {
         std::array<char, errorSize> err{};
-        if (vsGPUDrainSafeToDestroy(gpu_.vkapi->gpuExecPoolWaitIdle(pool_.get(), err.data(), errorSize)))
-            return true;
-        vsapi_->logMessage(mtWarning, err.data(), core);
-        return false;
+        const int drained = gpu_.vkapi->gpuExecPoolWaitIdle(pool_.get(), err.data(), errorSize);
+        if (drained != gdDrained)
+            vsapi_->logMessage(mtWarning, err.data(), core);
+        return drained;
     }
 
     // Logs the kernel times once every submission has completed, when profiling.
@@ -1865,11 +1865,15 @@ const VSFrame* VS_CC filterGetFrame(int n, int activationReason, void* instanceD
 
 void VS_CC filterFree(void* instanceData, VSCore* core, const VSAPI* vsapi) noexcept {
     std::unique_ptr<Filter> d{static_cast<Filter*>(instanceData)};
+    const int drained = d->drain(core);
     // Submissions that may still be running keep the GPU objects they use: the filter is leaked rather than destroyed.
-    if (!d->drain(core)) {
+    if (!vsGPUDrainSafeToDestroy(drained)) {
         d.release()->freeNodes();
         return;
     }
+    // A lost device has no timestamps to report.
+    if (drained != gdDrained)
+        return;
     try {
         d->reportProfile(core);
     } catch (const std::exception& e) {
