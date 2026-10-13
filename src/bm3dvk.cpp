@@ -1408,8 +1408,13 @@ PlaneBuffers framePlanes(const Gpu& gpu, const VSFrame* frame, int planes) {
     return buffers;
 }
 
-uint32_t elementStride(const VSAPI& vsapi, const VSFrame* frame) {
-    return static_cast<uint32_t>(vsapi.getStride(frame, 0) / vsapi.getVideoFrameFormat(frame)->bytesPerSample);
+// The convert and normalize kernels address every plane with the stride of plane 0.
+uint32_t elementStride(const VSAPI& vsapi, const VSFrame* frame, int planes) {
+    const auto stride = vsapi.getStride(frame, 0);
+    for (int plane = 1; plane < planes; ++plane)
+        if (vsapi.getStride(frame, plane) != stride)
+            fail("the planes of a frame must share one stride");
+    return static_cast<uint32_t>(stride / vsapi.getVideoFrameFormat(frame)->bytesPerSample);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1699,7 +1704,7 @@ void Filter::recordConvert(const Recorder& rec, const ExecContext& ctx, const Wo
     const auto convertOne = [&](const VSFrame* src, const PlaneBuffers& window) {
         ctx.reads(src);
         const std::array bindings{bindBuffers(bindIn, framePlanes(gpu_, src, plan_.planes), plan_.planes), bindBuffers(bindOut, window, plan_.planes)};
-        rec.dispatch(convert_, bindings, ConvertPush{.srcStride = elementStride(*vsapi_, src), .frame = static_cast<uint32_t>(frame)},
+        rec.dispatch(convert_, bindings, ConvertPush{.srcStride = elementStride(*vsapi_, src, plan_.planes),.frame = static_cast<uint32_t>(frame)},
                      {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
     };
     convertOne(sources.src[frame - sources.lo].get(), work.srcWindow);
@@ -1740,7 +1745,7 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
 void Filter::recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const {
     const std::array bindings{bindBuffers(bindIn, work.acc, plan_.planes), bindBuffers(bindOut, framePlanes(gpu_, dst, plan_.planes), plan_.planes),
                               bindBuffers(bindSrcWindow, work.srcWindow, plan_.planes)};
-    const NormalizePush push{.dstStride = elementStride(*vsapi_, dst), .frame = static_cast<uint32_t>(frame)};
+    const NormalizePush push{.dstStride = elementStride(*vsapi_, dst, plan_.planes),.frame = static_cast<uint32_t>(frame)};
     rec.dispatch(normalize_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
 }
 
