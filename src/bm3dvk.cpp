@@ -1523,6 +1523,8 @@ public:
 
     // Forgets frame n once its request ends without temporalFrame returning it, so that the ring no longer emits it.
     void forget(int n) noexcept {
+        if (!temporal())
+            return;
         pending_.erase(n);
         emitted_.erase(n);
     }
