@@ -1395,12 +1395,14 @@ private:
     KernelTimer* timer_{};
 };
 
-PlaneBuffers framePlanes(const VSVULKANAPI& vkapi, const VSFrame* frame, int planes) {
+PlaneBuffers framePlanes(const Gpu& gpu, const VSFrame* frame, int planes) {
     PlaneBuffers buffers{};
     for (int plane = 0; plane < planes; ++plane) {
         VSVulkanPlaneInfo info{};
-        if (vkapi.getGPUPlane(frame, plane, &info))
+        if (gpu.vkapi->getGPUPlane(frame, plane, &info))
             fail("the frame is not GPU resident");
+        if (info.bufferSize > static_cast<VkDeviceSize>(gpu.maxStorageRange))
+            fail("a frame plane of " + std::to_string(info.bufferSize) + " bytes exceeds the device's storage buffer range");
         buffers[plane] = info.buffer;
     }
     return buffers;
@@ -1696,7 +1698,7 @@ WorkBuffers Filter::createWorkBuffers(VSCore* core, Keep keep) const {
 void Filter::recordConvert(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, const Sources& sources, int frame) const {
     const auto convertOne = [&](const VSFrame* src, const PlaneBuffers& window) {
         ctx.reads(src);
-        const std::array bindings{bindBuffers(bindIn, framePlanes(*gpu_.vkapi, src, plan_.planes), plan_.planes), bindBuffers(bindOut, window, plan_.planes)};
+        const std::array bindings{bindBuffers(bindIn, framePlanes(gpu_, src, plan_.planes), plan_.planes), bindBuffers(bindOut, window, plan_.planes)};
         rec.dispatch(convert_, bindings, ConvertPush{.srcStride = elementStride(*vsapi_, src), .frame = static_cast<uint32_t>(frame)},
                      {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
     };
@@ -1736,7 +1738,7 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
 
 // Writes the estimate of `frame`, held in its accumulator slot, to dst; planes not filtered are taken from its window slot.
 void Filter::recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const {
-    const std::array bindings{bindBuffers(bindIn, work.acc, plan_.planes), bindBuffers(bindOut, framePlanes(*gpu_.vkapi, dst, plan_.planes), plan_.planes),
+    const std::array bindings{bindBuffers(bindIn, work.acc, plan_.planes), bindBuffers(bindOut, framePlanes(gpu_, dst, plan_.planes), plan_.planes),
                               bindBuffers(bindSrcWindow, work.srcWindow, plan_.planes)};
     const NormalizePush push{.dstStride = elementStride(*vsapi_, dst), .frame = static_cast<uint32_t>(frame)};
     rec.dispatch(normalize_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
