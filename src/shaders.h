@@ -1373,14 +1373,20 @@ void colPass(uint k, uint numGroups, bool inverse, uint src, uint dst) {
 // The z-pass of groups larger than any codelet: forward into the second buffer, shrink there, inverse back.
 float zPassMatrix(uint k) {
     const uint table = zTableOffset(k);
+    // The terms take the coefficients of dctCoef halved, their table indices (2j + 1) * m and j * (2m + 1) modulo 4k stepped rather than divided, and the
+    // sums are doubled once.
     for (uint e = gl_LocalInvocationIndex; e < (WIENER + 1) * k * HB * BLOCK; e += WG) {
         const uint g = e / (k * HB * BLOCK);
         const uint m = e / (HB * BLOCK) % k;
         const uint off = g * GRP_T + e % (HB * BLOCK) / BLOCK * BLOCK_P + e % BLOCK;
         vec2 sum = vec2(0.0);
-        for (uint j = 0; j < k; ++j)
-            sum += dctCoef(table, k, m, j, false) * vec2(G(off + j * BLK_T));
-        G(BUF_T + off + m * BLK_T) = T(sum);
+        uint q = m;
+        for (uint j = 0; j < k; ++j) {
+            sum += cosTable.data[table + q] * vec2(G(off + j * BLK_T));
+            q += m * 2;
+            q -= q >= k * 4 ? k * 4 : 0u;
+        }
+        G(BUF_T + off + m * BLK_T) = T(sum * 2.0);
     }
     SYNC();
     float stat = 0.0;
@@ -1399,10 +1405,14 @@ float zPassMatrix(uint k) {
     for (uint e = gl_LocalInvocationIndex; e < k * HB * BLOCK; e += WG) {
         const uint m = e / (HB * BLOCK);
         const uint off = e % (HB * BLOCK) / BLOCK * BLOCK_P + e % BLOCK;
-        vec2 sum = vec2(0.0);
-        for (uint j = 0; j < k; ++j)
-            sum += dctCoef(table, k, m, j, true) * vec2(G(BUF_T + off + j * BLK_T));
-        G(off + m * BLK_T) = T(sum);
+        vec2 sum = vec2(G(BUF_T + off)) * 0.5;
+        uint q = 0;
+        for (uint j = 1; j < k; ++j) {
+            q += m * 2 + 1;
+            q -= q >= k * 4 ? k * 4 : 0u;
+            sum += cosTable.data[table + q] * vec2(G(BUF_T + off + j * BLK_T));
+        }
+        G(off + m * BLK_T) = T(sum * 2.0);
     }
     return stat;
 }
