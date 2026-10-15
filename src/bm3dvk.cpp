@@ -799,8 +799,10 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.psRowMajor = laneSpacing(plan.psCols) > 2;
     // Distances in correlation form take the reference block offset by its mean, which pays off for blocks larger than bmRefInRegsMax, always read from shared
     // memory. Smaller blocks keep plain differences wherever their reference lives: one in registers, which the compiler reads again from the window instead,
-    // loses with it (measured).
-    plan.bmCorrelation = p.blockSize > bmRefInRegsMax;
+    // loses with it (measured). The distance of a duplicate block is then a rounding residual, of up to 2 * FLT_EPSILON * n * (n + BLOCK) for n samples in
+    // [0, 1], rather than 0: smaller thresholds keep plain differences, which match duplicates as the CPU implementation does.
+    const auto blockArea = static_cast<double>(p.blockSize) * p.blockSize;
+    plan.bmCorrelation = p.blockSize > bmRefInRegsMax && plan.thSSE >= 2.0 * std::numeric_limits<float>::epsilon() * blockArea * (blockArea + p.blockSize);
     plan.bmSubgroups = std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);
     plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
     if (plan.bmSingleChunk) {
