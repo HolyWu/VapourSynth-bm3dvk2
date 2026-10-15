@@ -987,6 +987,8 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"SFMA(a, b, c)", "fma(S(a), b, c)"},
         {"SFMS(a, b, c)", "fma(S(a), b, -(c))"},
         {"SFNMS(a, b, c)", "fma(-S(a), b, c)"},
+        // glslang rounds float16_t constants toward zero: half precision codelets take their constants rounded to nearest.
+        {"KP(f, h)", fp16Math ? "h" : "f"},
         {"Z_SCALAR", plan.zScalar ? "1" : "0"},
     };
     for (const auto& [name, value] : defines)
