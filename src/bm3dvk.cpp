@@ -203,6 +203,7 @@ struct Gpu {
     bool nvidiaDriver{};
     bool fp16Math{};
     bool fp16DenormPreserve{};
+    bool infNanPreserve{};
     bool floatAtomics{};
     uint32_t subgroupSize{};
     int maxWorkgroup{};
@@ -260,6 +261,7 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     // mode, NVIDIA and RADV still preserve them: ACO keeps 16-bit subnormals unless a shader asks to flush them.
     gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && props12.shaderDenormPreserveFloat16 == VK_TRUE &&
                    (gpu.fp16DenormPreserve || gpu.nvidiaDriver || props12.driverID == VK_DRIVER_ID_MESA_RADV);
+    gpu.infNanPreserve = props12.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
     gpu.subgroupSize = std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize);
     if (limits.maxComputeWorkGroupInvocations < imageTile * imageTile || limits.maxComputeWorkGroupSize[0] < imageTile ||
@@ -909,7 +911,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
     // Half precision groups are prescaled far down (see filterGroup), which takes dark and near-neutral samples into the subnormal range: keep them where a
     // driver would otherwise flush them (capability and execution mode DenormPreserve for 16-bit floats).
     const bool denormPreserve = fp16Math && gpu.fp16DenormPreserve;
-    if (denormPreserve)
+    if (denormPreserve || gpu.infNanPreserve)
         s += "#extension GL_EXT_spirv_intrinsics : require\n";
 
     std::string coef;
@@ -997,6 +999,10 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         s += "#define "s.append(name) + " " + value + "\n";
     if (denormPreserve)
         s += "spirv_execution_mode(capabilities = [4464], 4459, 16);\n";
+    // INF marks rejected candidates and NaN distances must fail the threshold, but without SignedZeroInfNanPreserve for 32-bit floats a driver may assume
+    // neither occurs (AMDVLK marks float operations nnan).
+    if (gpu.infNanPreserve)
+        s += "spirv_execution_mode(capabilities = [4466], 4461, 32);\n";
     return s;
 }
 
