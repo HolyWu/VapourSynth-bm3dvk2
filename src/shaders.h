@@ -508,6 +508,44 @@ void insertPair(float eD, uint eI, inout float lo, inout uint loI, inout float h
     }
 }
 
+// The pair of rank k - 1 of the ranks sortPairs left.
+void rankedPair(uint k, float lo, uint loI, float hi, uint hiI, out float d, out uint i) {
+    const bool high = (k & 1u) == 0u;
+    d = subgroupShuffle(high ? hi : lo, (k - 1) / 2);
+    i = subgroupShuffle(high ? hiI : loI, (k - 1) / 2);
+}
+
+// The two smallest (distance, slot) pairs of the lane's slots of candD[0, count) (lane, lane + SG, ...), the earlier slot first among equal distances, and
+// the third smallest distance. Skipping INF distances changes no result but the registers the compiler allocates: callers pass a constant skipInf, true
+// for selectCached (an unconditional min costs it up to 40 registers), false for selectSlots (measured faster).
+void lowestTwo(uint count, bool skipInf, out float d0, out uint i0, out float d1, out uint i1, out float d2) {
+    d0 = INF;
+    d1 = INF;
+    d2 = INF;
+    i0 = 0xFFFFFFFFu;
+    i1 = 0xFFFFFFFFu;
+    for (uint i = lane; i < count; i += SG) {
+        const float d = uintBitsToFloat(candD[sg][i]);
+        if (skipInf && d == INF)
+            continue;
+        if (d < d0) {
+            d2 = d1;
+            d1 = d0;
+            i1 = i0;
+            d0 = d;
+            i0 = i;
+        } else if (d < d1) {
+            d2 = d1;
+            d1 = d;
+            i1 = i;
+        } else if (!skipInf) {
+            d2 = min(d2, d);
+        } else if (d < d2) {
+            d2 = d;
+        }
+    }
+}
+
 #if RADIUS > 0
 // Whether a predictive search stops before its match of rank n, of distance minD: the match ranks n + #{rest distances <= minD} in the rest set, both growing
 // with n; the first PS_NUM matches are still needed as the next frame's search centers.
@@ -523,32 +561,17 @@ bool predictiveCut(bool full, uint n, uint nr, float minD) {
 // elements past its cached ones up to T are inserted one by one, a few per search, the largest pair dropping out. Otherwise rounds select ascending (distance,
 // slot): as the elements a lane has left are those past the last one selected, the rounds write no slot and need no synchronization.
 uint selectSlots(uint k) {
-    float myD = INF, nextD = INF, thirdD = INF;
-    uint myI = 0xFFFFFFFFu, nextI = 0xFFFFFFFFu;
-    for (uint i = lane; i < FULL_SLOTS; i += SG) {
-        const float d = uintBitsToFloat(candD[sg][i]);
-        if (d < myD) {
-            thirdD = nextD;
-            nextD = myD;
-            nextI = myI;
-            myD = d;
-            myI = i;
-        } else if (d < nextD) {
-            thirdD = nextD;
-            nextD = d;
-            nextI = i;
-        } else {
-            thirdD = min(thirdD, d);
-        }
-    }
+    float myD, nextD, thirdD;
+    uint myI, nextI;
+    lowestTwo(FULL_SLOTS, false, myD, myI, nextD, nextI, thirdD);
 
 #if GROUP - 1 <= SG * 2
     float lo, hi;
     uint loI, hiI;
     sortPairs(myD, myI, nextD, nextI, lo, loI, hi, hiI);
-    const bool boundHigh = (k & 1u) == 0u;
-    const float boundD = subgroupShuffle(boundHigh ? hi : lo, (k - 1) / 2);
-    const uint boundI = subgroupShuffle(boundHigh ? hiI : loI, (k - 1) / 2);
+    float boundD;
+    uint boundI;
+    rankedPair(k, lo, loI, hi, hiI, boundD, boundI);
     // A third element tied with T follows it if the second element ties too and does not precede T.
     bool pending = thirdD < boundD || (thirdD == boundD && thirdD != INF && (nextD < thirdD || nextI < boundI));
     for (uvec4 owners = subgroupBallot(pending); owners != uvec4(0); owners = subgroupBallot(pending)) {
@@ -621,26 +644,9 @@ uint selectSlots(uint k) {
 // uncached one of that distance: such a head takes key 0, as does the third, and once a round selects one of them, false is returned for mergeCandidates to run
 // as usual.
 bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint n) {
-    float d0 = INF, d1 = INF, d2 = INF;
-    uint i0 = 0, i1 = 0;
-    for (uint i = lane; i < nc; i += SG) {
-        const float d = uintBitsToFloat(candD[sg][i]);
-        if (d == INF)
-            continue;
-        if (d < d0) {
-            d2 = d1;
-            d1 = d0;
-            i1 = i0;
-            d0 = d;
-            i0 = i;
-        } else if (d < d1) {
-            d2 = d1;
-            d1 = d;
-            i1 = i;
-        } else if (d < d2) {
-            d2 = d;
-        }
-    }
+    float d0, d1, d2;
+    uint i0, i1;
+    lowestTwo(nc, true, d0, i0, d1, i1, d2);
     uint key0 = d0 != INF ? candidateKey(i0, 0, 0, full) : 0u;
     uint key1 = d1 != INF ? candidateKey(i1, 0, 0, full) : 0u;
     if (d0 == d1 && key1 < key0) {
@@ -657,9 +663,9 @@ bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint 
         float lo, hi;
         uint loK, hiK;
         sortPairs(d0, key0, d1, key1, lo, loK, hi, hiK);
-        const bool boundHigh = (k & 1u) == 0u;
-        const float boundD = subgroupShuffle(boundHigh ? hi : lo, (k - 1) / 2);
-        const uint boundK = subgroupShuffle(boundHigh ? hiK : loK, (k - 1) / 2);
+        float boundD;
+        uint boundK;
+        rankedPair(k, lo, loK, hi, hiK, boundD, boundK);
         bool pending = d2 <= boundD && d2 != INF;
         for (uvec4 owners = subgroupBallot(pending); owners != uvec4(0); owners = subgroupBallot(pending)) {
             const uint owner = subgroupBallotFindLSB(owners);
