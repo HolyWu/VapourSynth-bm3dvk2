@@ -154,6 +154,11 @@ layout(push_constant) uniform Push {
     uint refCount;
 } pc;
 
+uint sg;
+uint lane;
+
+// The search, which NO_MATCHING leaves out with its shared memory.
+#if !NO_MATCHING
 // Candidates are laid out in items of ny vertically adjacent search positions of nx adjacent columns (NY_FULL x NX_FULL for the full search, NY_PS x 1 for
 // predictive searches), so that one lane computes the distances of an item from shared loads of the window rows. Candidate s is row s % ny of item s / ny (nx
 // is 1 unless SINGLE_CHUNK). Every window of a search takes the items of the largest window the search can have (FULL_COLS x FULL_ROWS or PS_COLS x PS_ROWS),
@@ -254,9 +259,6 @@ shared uint curCenters[NSG][PS_NUM];
 shared uint stage[NSG][(RADIUS > 0 ? 4 : 2) * GROUP];
 #define STAGE(i) stage[sg][i]
 #endif
-
-uint sg;
-uint lane;
 
 uint frameOffset(uint windowFrame) {
     return slotOf(pc.firstFrame + windowFrame) * PLANE_SIZE;
@@ -945,6 +947,7 @@ void saveCenters(uint n) {
         centers[sg][i] = listK[sg][i];
     syncSubgroup();
 }
+#endif
 #endif
 
 void main() {

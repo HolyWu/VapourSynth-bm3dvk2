@@ -752,7 +752,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     };
     // A spatial search wider than a subgroup is keyed by slot (see selectSlots), its rows padded until a lane's slots lie apart; narrower ones, with few
     // candidates, run faster on the general merge (measured). No pitch puts a lane's slots further apart than SG columns in a row.
-    plan.bmSlotKeys = p.radius == 0 && plan.fullCols > sg;
+    plan.bmSlotKeys = !plan.noMatching && p.radius == 0 && plan.fullCols > sg;
     plan.fullPitch = plan.fullCols;
     while (plan.bmSlotKeys && laneSpacing(plan.fullPitch) < std::min(bmSpatialLaneSpacing, sg * sg))
         ++plan.fullPitch;
@@ -783,14 +783,17 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const int64_t fullCandidates = windowCandidates(plan.fullCols, plan.fullRows, plan.bmFullRows);
     const int64_t maxCandidates = p.radius == 0 ? fullCandidates
                                                 : std::max(fullCandidates, windowCandidates(plan.psCols, plan.psRows, plan.bmPredictiveRows) * p.psNum);
-    if (!std::in_range<int32_t>(maxCandidates))
+    if (!plan.noMatching && !std::in_range<int32_t>(maxCandidates))
         fail("too many search candidates, decrease \"bm_range\", \"ps_range\" or \"ps_num\"");
     const int64_t exactCandidates = exactCandidatesOf(plan.psCols, plan.psRows);
     // Spatial windows no wider than a subgroup are register bound: a reference in shared memory frees the registers their selection network needs (measured).
     // Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers; RADV indexes it through branch ladders and AMD's Windows compiler
     // through scratch memory, both far slower than shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
     plan.bmRefInRegs = gpu.nvidiaDriver && p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
+    // Without matching (NO_MATCHING) the kernel declares no search arrays.
     const auto bmShared = [&](int subgroups, int64_t chunk, bool singleChunk) {
+        if (plan.noMatching)
+            return int64_t{0};
         const int64_t perSubgroup = (plan.bmRefInRegs ? 0 : int64_t{p.blockSize} * divCeil(p.blockSize, 4) * 4 * sizeof(float)) +
                                     int64_t{plan.bmWindows} * 4 * sizeof(uint32_t) + chunk * sizeof(uint32_t) +
                                     list * (plan.bmSlotKeys && singleChunk ? 1 : 2) + (singleChunk ? 0 : list * (p.radius > 0 ? 4 : 2)) +
