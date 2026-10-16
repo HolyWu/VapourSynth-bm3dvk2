@@ -282,10 +282,14 @@ struct GpuBuffer {
     VkBuffer buffer{VK_NULL_HANDLE};
 };
 
-// A device local storage buffer, also the destination of fills and copies.
-GpuBuffer createBuffer(const Gpu& gpu, VSCore* core, int64_t size) {
+void checkBufferSize(const Gpu& gpu, int64_t size) {
     if (size > gpu.maxStorageRange)
         fail("a working buffer of " + std::to_string(size) + " bytes exceeds the device's storage buffer range");
+}
+
+// A device local storage buffer, also the destination of fills and copies.
+GpuBuffer createBuffer(const Gpu& gpu, VSCore* core, int64_t size) {
+    checkBufferSize(gpu, size);
     std::array<char, errorSize> err{};
     VSVulkanBufferInfo info{};
     BufferPtr owner{gpu.vkapi->createGPUBuffer(core, static_cast<VkDeviceSize>(size), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -1516,7 +1520,12 @@ public:
         if (plan_.pingpong)
             uploadCosTable(core);
         if (params_.radius > 0)
-            persistent_ = createWorkBuffers(core, [this](GpuBuffer&& buffer) { return persistentBuffers_.emplace_back(std::move(buffer)).buffer; });
+            persistent_ = createWorkBuffers([&](int64_t bytes) { return persistentBuffers_.emplace_back(createBuffer(gpu_, core, bytes)).buffer; });
+        else // Spatial filters create their working buffers per frame, so only their sizes are checked here.
+            createWorkBuffers([this](int64_t bytes) {
+                checkBufferSize(gpu_, bytes);
+                return VkBuffer{VK_NULL_HANDLE};
+            });
     }
 
     std::vector<VSFilterDependency> dependencies() const {
@@ -1610,8 +1619,8 @@ private:
 
     Sources getSources(int n, VSFrameContext* frameCtx) const;
     void uploadCosTable(VSCore* core);
-    template <typename Keep>
-    WorkBuffers createWorkBuffers(VSCore* core, Keep keep) const;
+    template <typename Make>
+    WorkBuffers createWorkBuffers(Make buffer) const;
     void recordConvert(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, const Sources& sources, int frame) const;
     void recordStep(const Recorder& rec, const WorkBuffers& work, const Step& step) const;
     void recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const;
@@ -1689,10 +1698,9 @@ void Filter::uploadCosTable(VSCore* core) {
     }
 }
 
-// The working buffers for plan_.slots frames, each handed to keep, which takes ownership and returns its handle.
-template <typename Keep>
-WorkBuffers Filter::createWorkBuffers(VSCore* core, Keep keep) const {
-    const auto buffer = [&](int64_t bytes) { return keep(createBuffer(gpu_, core, bytes)); };
+// The working buffers for plan_.slots frames, each made by buffer from its size in bytes, which returns its handle.
+template <typename Make>
+WorkBuffers Filter::createWorkBuffers(Make buffer) const {
     WorkBuffers work;
     for (int plane = 0; plane < plan_.planes; ++plane) {
         work.srcWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
@@ -1774,7 +1782,7 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
     OutFramePtr dst = newFrame(sources.src[0].get(), core);
 
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
-    const WorkBuffers work = createWorkBuffers(core, [&ctx](GpuBuffer&& buffer) { return ctx.retain(std::move(buffer)); });
+    const WorkBuffers work = createWorkBuffers([&](int64_t bytes) { return ctx.retain(createBuffer(gpu_, core, bytes)); });
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
     for (const int plane : plan_.activePlanes)
         rec.zero(work.acc[plane], 0, accSlotBytes(plan_));
