@@ -1545,12 +1545,13 @@ public:
         }
     }
 
-    // Forgets frame n once its request ends without temporalFrame returning it, so that the ring no longer emits it.
+    // Forgets a request for frame n that ends without temporalFrame returning it, so that the ring no longer emits n for it.
     void forget(int n) noexcept {
         if (!temporal())
             return;
-        pending_.erase(n);
-        emitted_.erase(n);
+        endRequest(n);
+        if (!pending_.contains(n))
+            emitted_.erase(n);
     }
 
     // Sigma and th_mse are normalized by the matrix, so opponent color space input must be filtered with matrix=100.
@@ -1564,7 +1565,7 @@ public:
     }
 
     OutFramePtr spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) const;
-    OutFramePtr temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core);
+    FramePtr temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core);
 
     // Waits out every submission and returns the VSGPUDrainResult, logging any failure.
     int drain(VSCore* core) const {
@@ -1617,6 +1618,11 @@ private:
     bool canContinue(int n) const;
     TemporalCursor restart(const Recorder& rec, int n) const;
 
+    void endRequest(int n) noexcept {
+        if (const auto it = pending_.find(n); it != pending_.end())
+            pending_.erase(it);
+    }
+
     const VSAPI* vsapi_{};
     NodePtr node_;
     NodePtr refNode_;
@@ -1633,10 +1639,10 @@ private:
     std::vector<GpuBuffer> persistentBuffers_;
     WorkBuffers persistent_;
     TemporalCursor cursor_;
-    // Frames emitted ahead, each for a pending request that takes it or forgets it.
-    std::map<int, OutFramePtr> emitted_;
-    // Frames requested and not yet returned; the cursor emits no other frame than n.
-    std::set<int> pending_;
+    // Frames emitted ahead, each for the pending requests that take it or forget it.
+    std::map<int, FramePtr> emitted_;
+    // Frames requested and not yet returned, once per request (VapourSynth does not merge external ones); the cursor emits no other frame than n.
+    std::multiset<int> pending_;
     std::unique_ptr<KernelTimer> timer_;
     // Declared last so that it is destroyed first: freeing the pool drains every submission still using the members above.
     PoolPtr pool_;
@@ -1797,11 +1803,14 @@ TemporalCursor Filter::restart(const Recorder& rec, int n) const {
             .convertedUpTo = std::max(first - params_.radius, 0)};
 }
 
-OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
-    pending_.erase(n);
+FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
+    // Another request for n that is still pending gets the same frame.
+    const bool shared = pending_.count(n) > 1;
     if (const auto it = emitted_.find(n); it != emitted_.end()) {
-        OutFramePtr frame = std::move(it->second);
-        emitted_.erase(it);
+        FramePtr frame = shared ? FramePtr{vsapi_->addFrameRef(it->second.get()), {vsapi_}} : std::move(it->second);
+        if (!shared)
+            emitted_.erase(it);
+        endRequest(n);
         return frame;
     }
 
@@ -1846,13 +1855,17 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
     ctx.submit();
     cursor_ = cursor;
 
-    OutFramePtr result;
+    FramePtr result;
     for (auto& [f, frame] : frames) {
-        if (f == n)
-            result = std::move(frame);
-        else
+        if (f != n) {
             emitted_.insert_or_assign(f, std::move(frame));
+            continue;
+        }
+        result = std::move(frame);
+        if (shared)
+            emitted_.insert_or_assign(n, FramePtr{vsapi_->addFrameRef(result.get()), {vsapi_}});
     }
+    endRequest(n);
     return result;
 }
 
