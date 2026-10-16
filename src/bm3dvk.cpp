@@ -1500,11 +1500,6 @@ struct TemporalCursor {
     int convertedUpTo{};
 };
 
-struct EmittedFrame {
-    OutFramePtr frame;
-    uint64_t age{};
-};
-
 class Filter {
 public:
     Filter(NodePtr node, NodePtr refNode, const Params& params, const Gpu& gpu, VSCore* core, const VSAPI& vsapi)
@@ -1516,7 +1511,7 @@ public:
                                             filterLayout(params_, plan_), sizeof(FilterPush), true})},
           normalize_{createKernel(gpu_, core,
                                   {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false})},
-          maxEmitted_{emittedCapacity(core)}, timer_{profilingRequested() ? std::make_unique<KernelTimer>(gpu_) : nullptr}, pool_{createPool(core)} {
+          timer_{profilingRequested() ? std::make_unique<KernelTimer>(gpu_) : nullptr}, pool_{createPool(core)} {
         if (plan_.pingpong)
             uploadCosTable(core);
         if (params_.radius > 0)
@@ -1600,12 +1595,6 @@ private:
 
     std::string kernelSource(std::string_view kernel) const { return preamble_ + std::string{shader::common} + std::string{kernel}; }
 
-    size_t emittedCapacity(VSCore* core) const {
-        VSCoreInfo2 info{};
-        vsapi_->getCoreInfo2(core, &info);
-        return static_cast<size_t>(info.numThreads + params_.radius + 1);
-    }
-
     PoolPtr createPool(VSCore* core) const {
         std::array<char, errorSize> err{};
         PoolPtr pool{gpu_.vkapi->createGPUExecPool(core, vqCompute, err.data(), errorSize), {gpu_.vkapi}};
@@ -1643,10 +1632,9 @@ private:
     GpuBuffer cosTable_;
     std::vector<GpuBuffer> persistentBuffers_;
     WorkBuffers persistent_;
-    size_t maxEmitted_{};
     TemporalCursor cursor_;
-    std::map<int, EmittedFrame> emitted_;
-    uint64_t emitAge_{};
+    // Frames emitted ahead, each for a pending request that takes it or forgets it.
+    std::map<int, OutFramePtr> emitted_;
     // Frames requested and not yet returned; the cursor emits no other frame than n.
     std::set<int> pending_;
     std::unique_ptr<KernelTimer> timer_;
@@ -1812,7 +1800,7 @@ TemporalCursor Filter::restart(const Recorder& rec, int n) const {
 OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
     pending_.erase(n);
     if (const auto it = emitted_.find(n); it != emitted_.end()) {
-        OutFramePtr frame = std::move(it->second.frame);
+        OutFramePtr frame = std::move(it->second);
         emitted_.erase(it);
         return frame;
     }
@@ -1863,11 +1851,8 @@ OutFramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core)
         if (f == n)
             result = std::move(frame);
         else
-            emitted_.insert_or_assign(f, EmittedFrame{std::move(frame), ++emitAge_});
+            emitted_.insert_or_assign(f, std::move(frame));
     }
-    // Frames emitted ahead are kept for requests already on their way; the oldest go first.
-    while (emitted_.size() > maxEmitted_)
-        emitted_.erase(std::ranges::min_element(emitted_, {}, [](const auto& entry) { return entry.second.age; }));
     return result;
 }
 
