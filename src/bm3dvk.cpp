@@ -1759,10 +1759,7 @@ void Filter::recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFra
 }
 
 OutFramePtr Filter::newFrame(const VSFrame* propSrc, VSCore* core) const {
-    OutFramePtr dst{gpu_.vkapi->newGPUVideoFrame(&vi_.format, vi_.width, vi_.height, propSrc, core), {vsapi_}};
-    if (!dst)
-        fail("failed to allocate an output frame");
-    return dst;
+    return OutFramePtr{gpu_.vkapi->newGPUVideoFrame(&vi_.format, vi_.width, vi_.height, propSrc, core), {vsapi_}};
 }
 
 OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) const {
