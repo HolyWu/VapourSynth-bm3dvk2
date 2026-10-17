@@ -32,7 +32,7 @@ uint slotOf(uint frame) { return frame % SLOTS; }
 ivec2 refPosition(uint row, uint col) { return min(ivec2(col, row) * BLOCK_STEP, ivec2(WIDTH, HEIGHT) - BLOCK); }
 )glsl";
 
-// RGB -> OPP (or a plain copy for Gray) from frame planes into one slot of a window.
+// RGB -> OPP (or a plain copy for Gray) from frame planes into one slot of a window, of the planes in pc.planes (always plane 0).
 inline constexpr std::string_view convert = R"glsl(
 layout(local_size_x = IMAGE_TILE, local_size_y = IMAGE_TILE) in;
 
@@ -42,6 +42,7 @@ layout(set = 0, binding = 1, std430) writeonly buffer Dst { STORE_T data[]; } ds
 layout(push_constant) uniform Push {
     uint srcStride;
     uint frame;
+    uint planes;
 } pc;
 
 void main() {
@@ -56,8 +57,10 @@ void main() {
     const float g = float(src[1].data[s]);
     const float b = float(src[2].data[s]);
     dst[0].data[d] = STORE_T((r + g + b) * (1.0 / 3.0));
-    dst[1].data[d] = STORE_T((r - b) * 0.5);
-    dst[2].data[d] = STORE_T((r - g * 2.0 + b) * 0.25);
+    if ((pc.planes & 2u) != 0u)
+        dst[1].data[d] = STORE_T((r - b) * 0.5);
+    if ((pc.planes & 4u) != 0u)
+        dst[2].data[d] = STORE_T((r - g * 2.0 + b) * 0.25);
 #else
     dst[0].data[d] = src[0].data[s];
 #endif

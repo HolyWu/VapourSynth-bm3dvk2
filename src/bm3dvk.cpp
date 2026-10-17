@@ -1088,6 +1088,7 @@ std::string filterSource(const Params& p, const std::string& preamble, bool scal
 struct ConvertPush {
     uint32_t srcStride{};
     uint32_t frame{};
+    uint32_t planes{};
 };
 
 struct BlockMatchPush {
@@ -1114,7 +1115,7 @@ struct NormalizePush {
 template <typename T>
 concept PushConstants = std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T> && sizeof(T) <= 128;
 
-static_assert(PushConstants<ConvertPush> && sizeof(ConvertPush) == 8);
+static_assert(PushConstants<ConvertPush> && sizeof(ConvertPush) == 12);
 static_assert(PushConstants<BlockMatchPush> && sizeof(BlockMatchPush) == 20);
 static_assert(PushConstants<FilterPush> && sizeof(FilterPush) == 20);
 static_assert(PushConstants<NormalizePush> && sizeof(NormalizePush) == 8);
@@ -1591,6 +1592,14 @@ private:
 
     std::string kernelSource(std::string_view kernel) const { return preamble_ + std::string{shader::common} + std::string{kernel}; }
 
+    // The planes of the reference window anything reads, as a mask: plane 0 for block matching and the filtered planes.
+    uint32_t refPlanes() const {
+        uint32_t planes = 1;
+        for (const int plane : plan_.activePlanes)
+            planes |= 1u << plane;
+        return planes;
+    }
+
     PoolPtr createPool(VSCore* core) const {
         std::array<char, errorSize> err{};
         PoolPtr pool{gpu_.vkapi->createGPUExecPool(core, vqCompute, err.data(), errorSize), {gpu_.vkapi}};
@@ -1693,9 +1702,13 @@ WorkBuffers Filter::createWorkBuffers(Make buffer) const {
     WorkBuffers work;
     for (int plane = 0; plane < plan_.planes; ++plane) {
         work.srcWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
-        if (params_.wiener)
+        if (params_.wiener && (refPlanes() >> plane & 1) != 0)
             work.refWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
     }
+    // Reference planes nothing reads take the descriptor of plane 0, which convert does not write for them.
+    for (int plane = 1; plane < plan_.planes; ++plane)
+        if (work.refWindow[plane] == VK_NULL_HANDLE)
+            work.refWindow[plane] = work.refWindow[0];
     // Planes left unfiltered get no accumulator: their descriptors take that of a filtered plane, which no kernel touches for them.
     for (const int plane : plan_.activePlanes)
         work.acc[plane] = buffer(accSlotBytes(plan_) * plan_.slots);
@@ -1711,15 +1724,15 @@ WorkBuffers Filter::createWorkBuffers(Make buffer) const {
 
 // Converts source frame `frame` into its window slot.
 void Filter::recordConvert(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, const Sources& sources, int frame) const {
-    const auto convertOne = [&](const VSFrame* src, const PlaneBuffers& window) {
+    const auto convertOne = [&](const VSFrame* src, const PlaneBuffers& window, uint32_t planes) {
         ctx.reads(src);
         const std::array bindings{bindBuffers(bindIn, framePlanes(gpu_, src, plan_.planes), plan_.planes), bindBuffers(bindOut, window, plan_.planes)};
-        rec.dispatch(convert_, bindings, ConvertPush{.srcStride = elementStride(*vsapi_, src, plan_.planes),.frame = static_cast<uint32_t>(frame)},
-                     {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
+        const ConvertPush push{.srcStride = elementStride(*vsapi_, src, plan_.planes), .frame = static_cast<uint32_t>(frame), .planes = planes};
+        rec.dispatch(convert_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
     };
-    convertOne(sources.src[frame - sources.lo].get(), work.srcWindow);
+    convertOne(sources.src[frame - sources.lo].get(), work.srcWindow, (1u << plan_.planes) - 1);
     if (params_.wiener)
-        convertOne(sources.ref[frame - sources.lo].get(), work.refWindow);
+        convertOne(sources.ref[frame - sources.lo].get(), work.refWindow, refPlanes());
 }
 
 void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step& step) const {
