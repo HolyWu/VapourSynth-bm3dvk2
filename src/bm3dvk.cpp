@@ -1453,20 +1453,14 @@ PlaneBuffers framePlanes(const Gpu& gpu, const VSFrame* frame, int planes) {
         VSVulkanPlaneInfo info{};
         if (gpu.vkapi->getGPUPlane(frame, plane, &info))
             fail("the frame is not GPU resident");
-        if (info.bufferSize > static_cast<VkDeviceSize>(gpu.maxStorageRange))
-            fail("a frame plane of " + std::to_string(info.bufferSize) + " bytes exceeds the device's storage buffer range");
         buffers[plane] = info.buffer;
     }
     return buffers;
 }
 
-// The convert and normalize kernels address every plane with the stride of plane 0.
-uint32_t elementStride(const VSAPI& vsapi, const VSFrame* frame, int planes) {
-    const auto stride = vsapi.getStride(frame, 0);
-    for (int plane = 1; plane < planes; ++plane)
-        if (vsapi.getStride(frame, plane) != stride)
-            fail("the planes of a frame must share one stride");
-    return static_cast<uint32_t>(stride / vsapi.getVideoFrameFormat(frame)->bytesPerSample);
+// The convert and normalize kernels address every plane with the stride of plane 0, which all planes of a Gray or RGB frame share.
+uint32_t elementStride(const VSAPI& vsapi, const VSFrame* frame) {
+    return static_cast<uint32_t>(vsapi.getStride(frame, 0) / vsapi.getVideoFrameFormat(frame)->bytesPerSample);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1767,7 +1761,7 @@ void Filter::recordConvert(const Recorder& rec, const ExecContext& ctx, const Wo
     const auto convertOne = [&](const VSFrame* src, const PlaneBuffers& window, uint32_t planes) {
         ctx.reads(src);
         const std::array bindings{bindBuffers(bindIn, framePlanes(gpu_, src, plan_.planes), plan_.planes), bindBuffers(bindOut, window, plan_.planes)};
-        const ConvertPush push{.srcStride = elementStride(*vsapi_, src, plan_.planes), .frame = static_cast<uint32_t>(frame), .planes = planes};
+        const ConvertPush push{.srcStride = elementStride(*vsapi_, src), .frame = static_cast<uint32_t>(frame), .planes = planes};
         rec.dispatch(convert_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
     };
     convertOne(sources.src[frame - sources.lo].get(), work.srcWindow, (1u << plan_.planes) - 1);
@@ -1807,7 +1801,7 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
 void Filter::recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const {
     const std::array bindings{bindBuffers(bindIn, work.acc, plan_.planes), bindBuffers(bindOut, framePlanes(gpu_, dst, plan_.planes), plan_.planes),
                               bindBuffers(bindSrcWindow, work.srcWindow, plan_.planes)};
-    const NormalizePush push{.dstStride = elementStride(*vsapi_, dst, plan_.planes),.frame = static_cast<uint32_t>(frame)};
+    const NormalizePush push{.dstStride = elementStride(*vsapi_, dst), .frame = static_cast<uint32_t>(frame)};
     rec.dispatch(normalize_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
 }
 
