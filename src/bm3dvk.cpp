@@ -202,7 +202,7 @@ struct Gpu {
     VSVulkanCoreHandles handles{};
     bool nvidiaDriver{};
     bool fp16Math{};
-    bool fp16DenormPreserve{};
+    std::vector<uint32_t> fp16DenormPreserve; // widths of the DenormPreserve modes kernels with half precision math declare
     bool infNanPreserve{};
     bool floatAtomics{};
     uint32_t subgroupSize{};
@@ -253,14 +253,18 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
 
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
     gpu.nvidiaDriver = props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
-    // Only a 16-bit mode independent of the 64-bit one may be set alone. NVIDIA's default is as close to the CPU implementation, and the mode costs its filter
-    // about 3% (RTX 4060 Ti, RGBH final vn).
-    gpu.fp16DenormPreserve = !gpu.nvidiaDriver && props12.shaderDenormPreserveFloat16 == VK_TRUE &&
-                             props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
-    // Half precision groups hold dark samples as subnormals (see buildPreamble): a device that cannot preserve them filters in single precision. Without the
-    // mode, NVIDIA and RADV still preserve them: ACO keeps 16-bit subnormals unless a shader asks to flush them.
+    // Half precision groups are prescaled far down (see filterGroup), which takes dark and near-neutral samples into the subnormal range: kernels keep them by
+    // DenormPreserve for 16-bit floats, and for 64-bit ones too where the driver ties the two modes (AMD). A device that cannot preserve them filters in single
+    // precision. NVIDIA keeps them without the mode, its default is as close to the CPU implementation, and the mode costs its filter about 3% (RTX 4060 Ti,
+    // RGBH final vn).
+    if (!gpu.nvidiaDriver && props12.shaderDenormPreserveFloat16 == VK_TRUE) {
+        if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL)
+            gpu.fp16DenormPreserve = {16};
+        else if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY && props12.shaderDenormPreserveFloat64 == VK_TRUE)
+            gpu.fp16DenormPreserve = {16, 64};
+    }
     gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && props12.shaderDenormPreserveFloat16 == VK_TRUE &&
-                   (gpu.fp16DenormPreserve || gpu.nvidiaDriver || props12.driverID == VK_DRIVER_ID_MESA_RADV);
+                   (gpu.nvidiaDriver || !gpu.fp16DenormPreserve.empty());
     gpu.infNanPreserve = props12.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
     gpu.subgroupSize = std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize);
@@ -913,10 +917,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         s += "#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require\n";
     if (gpu.floatAtomics)
         s += "#extension GL_EXT_shader_atomic_float : require\n";
-    // Half precision groups are prescaled far down (see filterGroup), which takes dark and near-neutral samples into the subnormal range: keep them where a
-    // driver would otherwise flush them (capability and execution mode DenormPreserve for 16-bit floats).
-    const bool denormPreserve = fp16Math && gpu.fp16DenormPreserve;
-    if (denormPreserve || gpu.infNanPreserve)
+    if (gpu.infNanPreserve)
         s += "#extension GL_EXT_spirv_intrinsics : require\n";
 
     std::string coef;
@@ -1002,8 +1003,6 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
     };
     for (const auto& [name, value] : defines)
         s += "#define "s.append(name) + " " + value + "\n";
-    if (denormPreserve)
-        s += "spirv_execution_mode(capabilities = [4464], 4459, 16);\n";
     // INF marks rejected candidates and NaN distances must fail the threshold, but without SignedZeroInfNanPreserve for 32-bit floats a driver may assume
     // neither occurs (AMDVLK marks float operations nnan).
     if (gpu.infNanPreserve)
@@ -1138,7 +1137,43 @@ struct KernelSpec {
     std::span<const BindingLayout> layout;
     uint32_t pushSize{};
     bool pinSubgroup{};
+    std::span<const uint32_t> denormPreserve;
 };
+
+// The words of a SPIR-V module with the execution mode DenormPreserve (and its capability) for each of `widths`: glslang keeps a single spirv_execution_mode
+// of a mode, where a driver tying the 16-bit mode to the 64-bit one needs both.
+std::vector<uint32_t> withDenormPreserve(std::span<const uint32_t> code, std::span<const uint32_t> widths) {
+    if (widths.empty())
+        return {code.begin(), code.end()};
+    constexpr size_t headerWords = 5;
+    constexpr uint32_t opEntryPoint = 15;
+    constexpr uint32_t opExecutionMode = 16;
+    constexpr uint32_t opCapability = 17;
+    constexpr uint32_t opExecutionModeId = 331;
+    constexpr uint32_t modeDenormPreserve = 4459;
+    constexpr uint32_t capabilityDenormPreserve = 4464;
+    std::vector<uint32_t> words(code.begin(), code.begin() + headerWords);
+    uint32_t entry{};
+    bool capabilityAdded = false;
+    bool modesAdded = false;
+    for (size_t i = headerWords; i < code.size(); i += code[i] >> 16) {
+        const uint32_t op = code[i] & 0xFFFF;
+        // The modes follow those of the entry point, the capability the first one of the module.
+        if (entry != 0 && !modesAdded && op != opEntryPoint && op != opExecutionMode && op != opExecutionModeId) {
+            for (const uint32_t width : widths)
+                words.insert(words.end(), {4u << 16 | opExecutionMode, entry, modeDenormPreserve, width});
+            modesAdded = true;
+        }
+        if (op == opEntryPoint)
+            entry = code[i + 2];
+        words.insert(words.end(), code.begin() + i, code.begin() + i + (code[i] >> 16));
+        if (op == opCapability && !capabilityAdded) {
+            words.insert(words.end(), {2u << 16 | opCapability, capabilityDenormPreserve});
+            capabilityAdded = true;
+        }
+    }
+    return words;
+}
 
 Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
     const VkDevice device = gpu.handles.device;
@@ -1177,8 +1212,10 @@ Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
         fail("shader compilation failed: "s + err.data());
     size_t codeBytes{};
     const uint32_t* code = gpu.vkapi->getGPUShaderCode(shader.get(), &codeBytes);
+    const std::vector<uint32_t> words = withDenormPreserve({code, codeBytes / sizeof(uint32_t)}, spec.denormPreserve);
 
-    const VkShaderModuleCreateInfo moduleInfo{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = codeBytes, .pCode = code};
+    const VkShaderModuleCreateInfo moduleInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words.size() * sizeof(uint32_t), .pCode = words.data()};
     const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroupInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .pNext = &moduleInfo, .requiredSubgroupSize = gpu.subgroupSize};
     const VkComputePipelineCreateInfo pipelineInfo{
@@ -1510,11 +1547,14 @@ public:
                 checkBufferSize(gpu_, bytes);
                 return VkBuffer{VK_NULL_HANDLE};
             });
-        convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false});
-        blockMatch_ = createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true});
-        filter_ = createKernel(gpu_, core,
-                               {"BM3D filter", filterSource(params_, preamble_, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true});
-        normalize_ = createKernel(gpu_, core, {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false});
+        const std::span<const uint32_t> denorm = plan_.fp16Math ? std::span<const uint32_t>{gpu_.fp16DenormPreserve} : std::span<const uint32_t>{};
+        convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false, denorm});
+        blockMatch_ =
+            createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true, denorm});
+        filter_ = createKernel(
+            gpu_, core, {"BM3D filter", filterSource(params_, preamble_, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true, denorm});
+        normalize_ = createKernel(gpu_, core,
+                                  {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false, denorm});
         if (plan_.pingpong)
             uploadCosTable(core);
     }
