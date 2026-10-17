@@ -275,7 +275,8 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
                                                                            uint64_t{props13.maxComputeWorkgroupSubgroups} * gpu.subgroupSize})));
     gpu.maxSharedMemory = limits.maxComputeSharedMemorySize;
     gpu.maxGroupCountX = static_cast<int>(std::min<uint32_t>(limits.maxComputeWorkGroupCount[0], std::numeric_limits<int>::max()));
-    gpu.maxStorageRange = limits.maxStorageBufferRange;
+    // Working buffers are created at the size they are bound with.
+    gpu.maxStorageRange = static_cast<int64_t>(std::min<uint64_t>(limits.maxStorageBufferRange, props13.maxBufferSize));
     gpu.maxStorageBuffers = limits.maxPerStageDescriptorStorageBuffers;
     return gpu;
 }
