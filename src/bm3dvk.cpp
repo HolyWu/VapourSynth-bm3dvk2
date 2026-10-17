@@ -268,6 +268,9 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     gpu.infNanPreserve = props12.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
     gpu.subgroupSize = std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize);
+    // Single lane subgroups would share the elements the filter keeps their Wiener sums in (see statElem in shaders.h).
+    if (gpu.subgroupSize < 2)
+        fail("the device's subgroups are too small");
     gpu.maxWorkgroup = static_cast<int>(std::bit_floor(std::min<uint64_t>({limits.maxComputeWorkGroupInvocations, limits.maxComputeWorkGroupSize[0],
                                                                            uint64_t{props13.maxComputeWorkgroupSubgroups} * gpu.subgroupSize})));
     gpu.maxSharedMemory = limits.maxComputeSharedMemorySize;
