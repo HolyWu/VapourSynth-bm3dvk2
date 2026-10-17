@@ -1106,7 +1106,8 @@ uint swizzled(uint z, uint i) {
 #if GLOBAL_GROUP
 uint groupBase;
 #define G(i) scratch.data[groupBase + (i)]
-#define SYNC() memoryBarrierBuffer(); barrier()
+// The fences around barrier() release this invocation's scratch writes and acquire those of the others.
+#define SYNC() memoryBarrierBuffer(); barrier(); memoryBarrierBuffer()
 #else
 shared T groupData[BUF_T * (PINGPONG + 1)];
 #define G(i) groupData[i]
