@@ -879,9 +879,11 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         plan.groupBytes -= paddingBytes;
     }
 
-    // Matching and filtering run in batches of whole tile rows of reference blocks, bounded by the size of the matches.
+    // Matching and filtering run in batches of whole tile rows of reference blocks, bounded by the size of the matches, or of fewer rows where the bound leaves
+    // no whole tile row.
     const int64_t rowsBudget = std::min(matchBudget, gpu.maxStorageRange) / (int64_t{plan.refCols} * p.groupSize * matchBytes(p));
-    plan.batchRows = static_cast<int>(std::min<int64_t>(std::max<int64_t>(rowsBudget / plan.tileRefs * plan.tileRefs, plan.tileRefs), plan.refRows));
+    const int64_t wholeRows = rowsBudget / plan.tileRefs * plan.tileRefs;
+    plan.batchRows = static_cast<int>(std::min<int64_t>(wholeRows > 0 ? wholeRows : std::max<int64_t>(rowsBudget, 1), plan.refRows));
     plan.filterGroupsX = static_cast<int>(std::min<int64_t>(int64_t{divCeil(plan.batchRows, plan.tileRefs)} * divCeil(plan.refCols, plan.tileRefs),
                                                             gpu.maxGroupCountX));
     if (plan.globalGroup) {
