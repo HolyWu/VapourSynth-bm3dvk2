@@ -1551,7 +1551,8 @@ public:
                 checkBufferSize(gpu_, bytes);
                 return VkBuffer{VK_NULL_HANDLE};
             });
-        const std::span<const uint32_t> denorm = plan_.fp16Math ? std::span<const uint32_t>{gpu_.fp16DenormPreserve} : std::span<const uint32_t>{};
+        // Half precision input keeps its subnormal samples through the loads and stores even where the math is single precision.
+        const std::span<const uint32_t> denorm = plan_.fp16Input ? std::span<const uint32_t>{gpu_.fp16DenormPreserve} : std::span<const uint32_t>{};
         convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false, denorm});
         blockMatch_ =
             createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true, denorm});
