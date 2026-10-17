@@ -1078,7 +1078,6 @@ layout(set = 0, binding = 6, std430) readonly buffer CosTable { float data[]; } 
 layout(push_constant) uniform Push {
     uint firstFrame;
     uint activeLo;
-    uint activeHi;
     uint cur;
     uint refRow0;
     uint refRows;
@@ -1441,7 +1440,7 @@ float zPass(uint k) {
 }
 
 bool accumulates(uint frame) {
-    return frame >= pc.activeLo && frame <= pc.activeHi;
+    return frame >= pc.activeLo;
 }
 
 // Adds a filtered sample pair of block z, rows 2p and 2p + 1 of column x, to the numerator of its frame.

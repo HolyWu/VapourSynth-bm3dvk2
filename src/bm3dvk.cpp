@@ -1100,7 +1100,6 @@ struct BlockMatchPush {
 struct FilterPush {
     uint32_t firstFrame{};
     uint32_t activeLo{};
-    uint32_t activeHi{};
     uint32_t cur{};
     uint32_t refRow0{};
     uint32_t refRows{};
@@ -1116,7 +1115,7 @@ concept PushConstants = std::is_trivially_copyable_v<T> && std::is_standard_layo
 
 static_assert(PushConstants<ConvertPush> && sizeof(ConvertPush) == 8);
 static_assert(PushConstants<BlockMatchPush> && sizeof(BlockMatchPush) == 20);
-static_assert(PushConstants<FilterPush> && sizeof(FilterPush) == 24);
+static_assert(PushConstants<FilterPush> && sizeof(FilterPush) == 20);
 static_assert(PushConstants<NormalizePush> && sizeof(NormalizePush) == 8);
 
 struct BindingLayout {
@@ -1477,13 +1476,12 @@ std::vector<BindingLayout> filterLayout(const Params& p, const Plan& plan) {
 }
 
 // One reference frame's block matching and filtering, over window frames [firstFrame, firstFrame + numFrames) of which the reference frame is the cur-th;
-// estimates land in frames [activeLo, activeHi] only.
+// estimates land in frames from activeLo on only.
 struct Step {
     int firstFrame{};
     int numFrames{1};
     int cur{};
     int activeLo{};
-    int activeHi{};
 };
 
 // Temporal filtering scatters the estimates of reference frame m into frames m - radius .. m + radius. Accumulators of those frames live in a ring, so each
@@ -1493,7 +1491,6 @@ struct TemporalCursor {
     bool valid{};
     int nextRef{};
     int retiredUpTo{};
-    int firstComplete{};
     int convertedUpTo{};
 };
 
@@ -1743,7 +1740,6 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
 
         const FilterPush push{.firstFrame = static_cast<uint32_t>(step.firstFrame),
                               .activeLo = static_cast<uint32_t>(step.activeLo),
-                              .activeHi = static_cast<uint32_t>(step.activeHi),
                               .cur = static_cast<uint32_t>(step.cur),
                               .refRow0 = static_cast<uint32_t>(row0),
                               .refRows = static_cast<uint32_t>(rows)};
@@ -1796,8 +1792,7 @@ TemporalCursor Filter::restart(const Recorder& rec, int n) const {
     const int firstComplete = first == 0 ? 0 : first + params_.radius;
     for (const int plane : plan_.activePlanes)
         rec.zero(persistent_.acc[plane], 0, accSlotBytes(plan_) * plan_.slots);
-    return {.valid = true, .nextRef = first, .retiredUpTo = firstComplete, .firstComplete = firstComplete,
-            .convertedUpTo = std::max(first - params_.radius, 0)};
+    return {.valid = true, .nextRef = first, .retiredUpTo = firstComplete, .convertedUpTo = std::max(first - params_.radius, 0)};
 }
 
 FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
@@ -1830,9 +1825,10 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
             recordConvert(rec, ctx, persistent_, sources, cursor.convertedUpTo);
         rec.barrier();
 
+        // Frames below retiredUpTo are retired, or after a restart lack earlier reference frames.
         recordStep(rec, persistent_,
                    {.firstFrame = firstFrame, .numFrames = lastFrame - firstFrame + 1, .cur = m - firstFrame,
-                    .activeLo = std::max(firstFrame, cursor.firstComplete), .activeHi = lastFrame});
+                    .activeLo = std::max(firstFrame, cursor.retiredUpTo)});
 
         // A frame no request waits for is only cleared from the ring.
         for (const int retireHi = m == last ? last : m - radius; cursor.retiredUpTo <= retireHi; ++cursor.retiredUpTo) {
