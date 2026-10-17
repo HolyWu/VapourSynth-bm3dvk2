@@ -1486,8 +1486,8 @@ struct Step {
 };
 
 // Temporal filtering scatters the estimates of reference frame m into frames m - radius .. m + radius. Accumulators of those frames live in a ring, so each
-// source frame is converted once and each frame is retired once all of its reference frames have been processed, emitted then if it is requested. getFrame runs
-// fmUnordered, which serializes every access to this state.
+// source frame is converted once and each frame is retired once all of its reference frames have been processed, emitted then if it is requested; at the end of
+// the clip, frames past the request wait for their own. getFrame runs fmUnordered, which serializes every access to this state.
 struct TemporalCursor {
     bool valid{};
     int nextRef{};
@@ -1817,19 +1817,23 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
 
     std::vector<std::pair<int, OutFramePtr>> frames;
     while (cursor.retiredUpTo <= n) {
-        const int m = cursor.nextRef++;
-        const auto [firstFrame, lastFrame] = frameSpan(m, radius);
-        for (; cursor.convertedUpTo <= lastFrame; ++cursor.convertedUpTo)
-            recordConvert(rec, ctx, persistent_, sources, cursor.convertedUpTo);
-        rec.barrier();
+        const int m = cursor.nextRef;
+        if (m <= last) {
+            ++cursor.nextRef;
+            const auto [firstFrame, lastFrame] = frameSpan(m, radius);
+            for (; cursor.convertedUpTo <= lastFrame; ++cursor.convertedUpTo)
+                recordConvert(rec, ctx, persistent_, sources, cursor.convertedUpTo);
+            rec.barrier();
 
-        // Frames below retiredUpTo are retired, or after a restart lack earlier reference frames.
-        recordStep(rec, persistent_,
-                   {.firstFrame = firstFrame, .numFrames = lastFrame - firstFrame + 1, .cur = m - firstFrame,
-                    .activeLo = std::max(firstFrame, cursor.retiredUpTo)});
+            // Frames below retiredUpTo are retired, or after a restart lack earlier reference frames.
+            recordStep(rec, persistent_,
+                       {.firstFrame = firstFrame, .numFrames = lastFrame - firstFrame + 1, .cur = m - firstFrame,
+                        .activeLo = std::max(firstFrame, cursor.retiredUpTo)});
+        }
 
-        // A frame no request waits for is only cleared from the ring.
-        for (const int retireHi = m == last ? last : m - radius; cursor.retiredUpTo <= retireHi; ++cursor.retiredUpTo) {
+        // A frame no request waits for is only cleared from the ring. Once the last reference frame is in, the frames past n stay complete in the ring for
+        // their own requests.
+        for (const int retireHi = m >= last ? n : m - radius; cursor.retiredUpTo <= retireHi; ++cursor.retiredUpTo) {
             const int f = cursor.retiredUpTo;
             if (f == n || pending_.contains(f)) {
                 OutFramePtr dst = newFrame(sources.src[f - sources.lo].get(), core);
