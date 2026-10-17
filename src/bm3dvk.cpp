@@ -1946,7 +1946,9 @@ const VSFrame* VS_CC filterGetFrame(int n, int activationReason, void* instanceD
     } catch (...) {
         vsapi->setFilterError("BM3D: unknown error", frameCtx);
     }
-    d.forget(n);
+    // A request that failed at arInitial was never registered, and the core calls its context no more.
+    if (activationReason != arInitial)
+        d.forget(n);
     return nullptr;
 }
 
