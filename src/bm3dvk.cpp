@@ -1876,7 +1876,8 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
     TemporalCursor cursor = canContinue(n) ? cursor_ : restart(rec, n);
     cursor_.valid = false;
 
-    std::vector<std::pair<int, OutFramePtr>> frames;
+    FramePtr result;
+    std::map<int, FramePtr> ahead;
     while (cursor.retiredUpTo <= n) {
         const int m = cursor.nextRef;
         if (m <= last) {
@@ -1901,26 +1902,26 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
                 ctx.writes(dst.get(), plan_.planes);
                 recordNormalize(rec, persistent_, dst.get(), f);
                 rec.barrier();
-                frames.emplace_back(f, std::move(dst));
+                if (f == n)
+                    result = std::move(dst);
+                else
+                    ahead.emplace(f, std::move(dst));
             }
             for (const int plane : plan_.activePlanes)
                 rec.zero(persistent_.acc[plane], accSlotBytes(plan_) * (f % plan_.slots), accSlotBytes(plan_));
             rec.barrier();
         }
     }
+    if (shared)
+        ahead.emplace(n, FramePtr{vsapi_->addFrameRef(result.get()), {vsapi_}});
     ctx.submit();
     cursor_ = cursor;
 
-    FramePtr result;
-    for (auto& [f, frame] : frames) {
-        if (f != n) {
-            emitted_.insert_or_assign(f, std::move(frame));
-            continue;
-        }
-        result = std::move(frame);
-        if (shared)
-            emitted_.insert_or_assign(n, FramePtr{vsapi_->addFrameRef(result.get()), {vsapi_}});
-    }
+    // Nothing may throw past the submission, whose ring slots are cleared: merging moves the nodes allocated above, and a frame emitted again replaces the
+    // earlier one.
+    emitted_.merge(ahead);
+    for (auto& [f, frame] : ahead)
+        emitted_.find(f)->second = std::move(frame);
     endRequest(n);
     return result;
 }
