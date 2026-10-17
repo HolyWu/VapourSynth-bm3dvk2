@@ -804,7 +804,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers; RADV indexes it through branch ladders and AMD's Windows compiler
     // through scratch memory, both far slower than shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
     plan.bmRefInRegs = gpu.nvidiaDriver && p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
-    // Without matching (NO_MATCHING) the kernel declares no search arrays.
+    // Without matching (NO_MATCHING) the kernel declares no search arrays. The limit includes padding, and a driver laying the arrays out in another order
+    // may pad each vec4 one (the search windows and a shared reference block) by up to 12 bytes.
     const auto bmShared = [&](int subgroups, int64_t chunk, bool singleChunk) {
         if (plan.noMatching)
             return int64_t{0};
@@ -812,7 +813,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
                                     int64_t{plan.bmWindows} * 4 * sizeof(uint32_t) + chunk * sizeof(uint32_t) +
                                     list * (plan.bmSlotKeys && singleChunk ? 1 : 2) + (singleChunk ? 0 : list * (p.radius > 0 ? 4 : 2)) +
                                     (p.radius > 0 ? list * 4 + int64_t{p.psNum} * 2 * sizeof(uint32_t) : 0);
-        return perSubgroup * subgroups;
+        return perSubgroup * subgroups + (plan.bmRefInRegs ? 1 : 2) * 12;
     };
     plan.fullRowMajor = plan.bmSlotKeys || laneSpacing(plan.fullPitch) > 2;
     plan.psRowMajor = laneSpacing(plan.psCols) > 2;
