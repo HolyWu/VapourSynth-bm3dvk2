@@ -517,9 +517,9 @@ void rankedPair(uint k, float lo, uint loI, float hi, uint hiI, out float d, out
     i = subgroupShuffle(high ? hiI : loI, (k - 1) / 2);
 }
 
-// The two smallest (distance, slot) pairs of the lane's slots of candD[0, count) (lane, lane + SG, ...), the earlier slot first among equal distances, and
-// the third smallest distance. Skipping INF distances changes no result but the registers the compiler allocates: callers pass a constant skipInf, true
-// for selectCached (an unconditional min costs it up to 40 registers), false for selectSlots (measured faster).
+// The two smallest (distance, slot) pairs of the lane's slots of candD[0, count) (lane, lane + SG, ...), the earlier slot first among equal distances, and the
+// third smallest distance. Skipping INF distances changes no result but the registers the compiler allocates: callers pass a constant skipInf, true for
+// selectCached (an unconditional min costs it up to 40 registers), false for selectSlots (measured faster).
 void lowestTwo(uint count, bool skipInf, out float d0, out uint i0, out float d1, out uint i1, out float d2) {
     d0 = INF;
     d1 = INF;
@@ -1375,8 +1375,8 @@ void colPass(uint k, uint numGroups, bool inverse, uint src, uint dst) {
 // The z-pass of groups larger than any codelet: forward into the second buffer, shrink there, inverse back.
 float zPassMatrix(uint k) {
     const uint table = zTableOffset(k);
-    // The terms take the coefficients of dctCoef halved, their table indices (2j + 1) * m and j * (2m + 1) modulo 4k stepped rather than divided, and the
-    // sums are doubled once.
+    // The terms take the coefficients of dctCoef halved, their table indices (2j + 1) * m and j * (2m + 1) modulo 4k stepped rather than divided, and the sums
+    // are doubled once.
     for (uint e = gl_LocalInvocationIndex; e < (WIENER + 1) * k * HB * BLOCK; e += WG) {
         const uint g = e / (k * HB * BLOCK);
         const uint m = e / (HB * BLOCK) % k;

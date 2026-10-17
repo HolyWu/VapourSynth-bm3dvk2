@@ -264,9 +264,8 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     gpu.infNanPreserve = props12.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
     gpu.subgroupSize = std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize);
-    gpu.maxWorkgroup = static_cast<int>(std::bit_floor(
-        std::min<uint64_t>({limits.maxComputeWorkGroupInvocations, limits.maxComputeWorkGroupSize[0],
-                            uint64_t{props13.maxComputeWorkgroupSubgroups} * gpu.subgroupSize})));
+    gpu.maxWorkgroup = static_cast<int>(std::bit_floor(std::min<uint64_t>({limits.maxComputeWorkGroupInvocations, limits.maxComputeWorkGroupSize[0],
+                                                                           uint64_t{props13.maxComputeWorkgroupSubgroups} * gpu.subgroupSize})));
     gpu.maxSharedMemory = limits.maxComputeSharedMemorySize;
     gpu.maxGroupCountX = static_cast<int>(std::min<uint32_t>(limits.maxComputeWorkGroupCount[0], std::numeric_limits<int>::max()));
     gpu.maxStorageRange = limits.maxStorageBufferRange;
