@@ -558,6 +558,9 @@ Params parseParams(const ArgReader& args, const VSVideoInfo& vi, bool wiener) {
     p.thMSE = args.real("th_mse").value_or(defaultThMSE(*profile, wiener, sigma[0]));
     if (p.thMSE < 0.0)
         fail("\"th_mse\" must be a non-negative number");
+    // Without block matching every group holds just its reference block, which sizes the kernels and buffers.
+    if (p.thMSE == 0.0)
+        p.groupSize = 1;
     // Hard thresholding is basic only: final estimates ignore hard_thr.
     if (!wiener) {
         p.lambda = args.real("hard_thr").value_or(p.lambda);
