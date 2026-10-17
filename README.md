@@ -37,7 +37,7 @@ bm3dvk2.BM3D(vnode clip[, vnode ref=None, str profile="fast", float[] sigma=[10,
 
 - ps_step: Step between predictive search positions, valid range [1, ps_range]. Temporal only.
 
-- th_mse: Threshold of mean square error for block-matching, valid range [0, +inf). Defaults depend on the profile and `sigma[0]`.
+- th_mse: Threshold of mean square error for block-matching, valid range [0, +inf). Defaults depend on the profile and `sigma[0]`. With `block_size` above 8, block distances carry a rounding error that grows with the square of the sample range, so for content far outside [0, 1] and a small `th_mse`, identical blocks may go unmatched.
 
 - hard_thr: Threshold of hard-thresholding, valid range (0, +inf). Basic estimate only.
 
