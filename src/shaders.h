@@ -1023,10 +1023,12 @@ void main() {
                 centers[sg][i] = curCenters[sg][i];
             syncSubgroup();
             uint numCenters = numCurCenters;
-            for (int f = int(pc.cur) + dir; f >= 0 && f < int(pc.numFrames) && numCenters > 0; f += dir) {
+            for (int f = int(pc.cur) + dir; f >= 0 && f < int(pc.numFrames); f += dir) {
                 const uint nl = predictiveSearch(numCenters, frameOffset(uint(f)), nr);
+                // A frame without matches keeps the centers of the last one that had some, as the CPU implementation does.
                 saveCenters(nl);
-                numCenters = min(nl, uint(PS_NUM));
+                if (nl > 0)
+                    numCenters = min(nl, uint(PS_NUM));
                 nr = mergeRest(nr, nl, concat, uint(f));
                 concat += nl;
             }
