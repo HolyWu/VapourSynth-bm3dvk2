@@ -202,7 +202,7 @@ struct Gpu {
     VSVulkanCoreHandles handles{};
     bool nvidiaDriver{};
     bool fp16Math{};
-    std::vector<uint32_t> fp16DenormPreserve; // widths of the DenormPreserve modes kernels with half precision math declare
+    std::vector<uint32_t> fp16DenormPreserve; // widths of the DenormPreserve modes kernels of half precision input declare
     bool infNanPreserve{};
     bool floatAtomics{};
     uint32_t subgroupSize{};
@@ -928,8 +928,6 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         s += "#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require\n";
     if (gpu.floatAtomics)
         s += "#extension GL_EXT_shader_atomic_float : require\n";
-    if (gpu.infNanPreserve)
-        s += "#extension GL_EXT_spirv_intrinsics : require\n";
 
     std::string coef;
     for (int i = 0; i < plan.planes * 4; ++i)
@@ -1014,10 +1012,6 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
     };
     for (const auto& [name, value] : defines)
         s += "#define "s.append(name) + " " + value + "\n";
-    // INF marks rejected candidates and NaN distances must fail the threshold, but without SignedZeroInfNanPreserve for 32-bit floats a driver may assume
-    // neither occurs (AMDVLK marks float operations nnan).
-    if (gpu.infNanPreserve)
-        s += "spirv_execution_mode(capabilities = [4466], 4461, 32);\n";
     return s;
 }
 
@@ -1142,45 +1136,58 @@ struct Kernel {
     const char* name{};
 };
 
+// A float controls execution mode for one width, with the capability it requires.
+struct FloatMode {
+    uint32_t mode{};
+    uint32_t capability{};
+    uint32_t width{};
+};
+
+constexpr uint32_t modeDenormPreserve = 4459;
+constexpr uint32_t modeSignedZeroInfNanPreserve = 4461;
+constexpr uint32_t capabilityDenormPreserve = 4464;
+constexpr uint32_t capabilitySignedZeroInfNanPreserve = 4466;
+
 struct KernelSpec {
     const char* name{};
     std::string source;
     std::span<const BindingLayout> layout;
     uint32_t pushSize{};
     bool pinSubgroup{};
-    std::span<const uint32_t> denormPreserve;
+    std::span<const FloatMode> floatModes;
 };
 
-// The words of a SPIR-V module with the execution mode DenormPreserve (and its capability) for each of `widths`: glslang keeps a single spirv_execution_mode
-// of a mode, where a driver tying the 16-bit mode to other widths needs one for each.
-std::vector<uint32_t> withDenormPreserve(std::span<const uint32_t> code, std::span<const uint32_t> widths) {
-    if (widths.empty())
+// The words of a SPIR-V module with `modes` added (and their capabilities): glslang keeps a single spirv_execution_mode of a mode, where a driver tying the
+// 16-bit denorm mode to other widths needs one for each.
+std::vector<uint32_t> withFloatModes(std::span<const uint32_t> code, std::span<const FloatMode> modes) {
+    if (modes.empty())
         return {code.begin(), code.end()};
     constexpr size_t headerWords = 5;
     constexpr uint32_t opEntryPoint = 15;
     constexpr uint32_t opExecutionMode = 16;
     constexpr uint32_t opCapability = 17;
     constexpr uint32_t opExecutionModeId = 331;
-    constexpr uint32_t modeDenormPreserve = 4459;
-    constexpr uint32_t capabilityDenormPreserve = 4464;
     std::vector<uint32_t> words(code.begin(), code.begin() + headerWords);
     uint32_t entry{};
-    bool capabilityAdded = false;
+    bool capabilitiesAdded = false;
     bool modesAdded = false;
     for (size_t i = headerWords; i < code.size(); i += code[i] >> 16) {
         const uint32_t op = code[i] & 0xFFFF;
-        // The modes follow those of the entry point, the capability the first one of the module.
+        // The modes follow those of the entry point, the capabilities the first one of the module.
         if (entry != 0 && !modesAdded && op != opEntryPoint && op != opExecutionMode && op != opExecutionModeId) {
-            for (const uint32_t width : widths)
-                words.insert(words.end(), {4u << 16 | opExecutionMode, entry, modeDenormPreserve, width});
+            for (const FloatMode& m : modes)
+                words.insert(words.end(), {4u << 16 | opExecutionMode, entry, m.mode, m.width});
             modesAdded = true;
         }
         if (op == opEntryPoint)
             entry = code[i + 2];
         words.insert(words.end(), code.begin() + i, code.begin() + i + (code[i] >> 16));
-        if (op == opCapability && !capabilityAdded) {
-            words.insert(words.end(), {2u << 16 | opCapability, capabilityDenormPreserve});
-            capabilityAdded = true;
+        if (op == opCapability && !capabilitiesAdded) {
+            std::set<uint32_t> capabilities;
+            for (const FloatMode& m : modes)
+                if (capabilities.insert(m.capability).second)
+                    words.insert(words.end(), {2u << 16 | opCapability, m.capability});
+            capabilitiesAdded = true;
         }
     }
     return words;
@@ -1223,7 +1230,7 @@ Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
         fail("shader compilation failed: "s + err.data());
     size_t codeBytes{};
     const uint32_t* code = gpu.vkapi->getGPUShaderCode(shader.get(), &codeBytes);
-    const std::vector<uint32_t> words = withDenormPreserve({code, codeBytes / sizeof(uint32_t)}, spec.denormPreserve);
+    const std::vector<uint32_t> words = withFloatModes({code, codeBytes / sizeof(uint32_t)}, spec.floatModes);
 
     const VkShaderModuleCreateInfo moduleInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words.size() * sizeof(uint32_t), .pCode = words.data()};
@@ -1552,15 +1559,22 @@ public:
                 checkBufferSize(gpu_, bytes);
                 return VkBuffer{VK_NULL_HANDLE};
             });
-        // Half precision input keeps its subnormal samples through the loads and stores even where the math is single precision.
-        const std::span<const uint32_t> denorm = plan_.fp16Input ? std::span<const uint32_t>{gpu_.fp16DenormPreserve} : std::span<const uint32_t>{};
-        convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false, denorm});
+        // INF marks rejected candidates and NaN distances must fail the threshold, but without SignedZeroInfNanPreserve for 32-bit floats a driver may assume
+        // neither occurs (AMDVLK marks float operations nnan). Half precision input keeps its subnormal samples through the loads and stores even where the
+        // math is single precision.
+        std::vector<FloatMode> modes;
+        if (gpu_.infNanPreserve)
+            modes.push_back({modeSignedZeroInfNanPreserve, capabilitySignedZeroInfNanPreserve, 32});
+        if (plan_.fp16Input)
+            for (const uint32_t width : gpu_.fp16DenormPreserve)
+                modes.push_back({modeDenormPreserve, capabilityDenormPreserve, width});
+        convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false, modes});
         blockMatch_ =
-            createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true, denorm});
+            createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true, modes});
         filter_ = createKernel(
-            gpu_, core, {"BM3D filter", filterSource(params_, preamble_, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true, denorm});
+            gpu_, core, {"BM3D filter", filterSource(params_, preamble_, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true, modes});
         normalize_ = createKernel(gpu_, core,
-                                  {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false, denorm});
+                                  {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false, modes});
         if (plan_.pingpong)
             uploadCosTable(core);
     }
