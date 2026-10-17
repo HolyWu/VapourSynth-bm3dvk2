@@ -1594,14 +1594,18 @@ public:
             emitted_.erase(n);
     }
 
-    // Sigma and th_mse are normalized by the matrix, so opponent color space input must be filtered with matrix=100.
+    // Sigma and th_mse are normalized by the matrix, so opponent color space input must be filtered with matrix=100. Like the CPU implementation, which checks
+    // the frame of each reference block, a temporal estimate checks the frames of the reference blocks it aggregates.
     void checkMatrix(int n, VSFrameContext* frameCtx) const {
         if (params_.matrix == matrixOPP)
             return;
-        const FramePtr src{vsapi_->getFrameFilter(n, node_.get(), frameCtx), {vsapi_}};
-        int err{};
-        if (vsapi_->mapGetInt(vsapi_->getFramePropertiesRO(src.get()), "BM3D_OPP", 0, &err) == 1)
-            fail("the input frame property \"BM3D_OPP=1\" indicates opponent color space input, \"matrix=100\" must be specified");
+        const auto [lo, hi] = frameSpan(n, params_.radius);
+        for (int f = lo; f <= hi; ++f) {
+            const FramePtr src{vsapi_->getFrameFilter(f, node_.get(), frameCtx), {vsapi_}};
+            int err{};
+            if (vsapi_->mapGetInt(vsapi_->getFramePropertiesRO(src.get()), "BM3D_OPP", 0, &err) == 1)
+                fail("the input frame property \"BM3D_OPP=1\" indicates opponent color space input, \"matrix=100\" must be specified");
+        }
     }
 
     OutFramePtr spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) const;
