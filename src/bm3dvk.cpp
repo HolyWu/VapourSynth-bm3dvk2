@@ -211,6 +211,7 @@ struct Gpu {
     int maxGroupCountX{};
     int64_t maxStorageRange{};
     uint32_t maxStorageBuffers{};
+    float timestampPeriod{};
 };
 
 bool hasDeviceExtension(const Gpu& gpu, std::string_view name) {
@@ -281,6 +282,7 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     // Working buffers are created at the size they are bound with.
     gpu.maxStorageRange = static_cast<int64_t>(std::min<uint64_t>(limits.maxStorageBufferRange, props13.maxBufferSize));
     gpu.maxStorageBuffers = limits.maxPerStageDescriptorStorageBuffers;
+    gpu.timestampPeriod = limits.timestampPeriod;
     return gpu;
 }
 
@@ -1315,10 +1317,7 @@ struct Groups {
 // logged when the filter is freed. Dispatches past the capacity go untimed.
 class KernelTimer {
 public:
-    explicit KernelTimer(const Gpu& gpu) : vk_{gpu.vk}, device_{gpu.handles.device}, names_(capacity / 2) {
-        VkPhysicalDeviceProperties2 props{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-        vk_->vkGetPhysicalDeviceProperties2(gpu.handles.physicalDevice, &props);
-        period_ = props.properties.limits.timestampPeriod;
+    explicit KernelTimer(const Gpu& gpu) : vk_{gpu.vk}, device_{gpu.handles.device}, period_{gpu.timestampPeriod}, names_(capacity / 2) {
         uint32_t families{};
         vk_->vkGetPhysicalDeviceQueueFamilyProperties2(gpu.handles.physicalDevice, &families, nullptr);
         std::vector<VkQueueFamilyProperties2> familyProps(families, {.sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2});
