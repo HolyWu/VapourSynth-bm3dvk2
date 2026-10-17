@@ -254,14 +254,17 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
     gpu.nvidiaDriver = props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
     // Half precision groups are prescaled far down (see filterGroup), which takes dark and near-neutral samples into the subnormal range: kernels keep them by
-    // DenormPreserve for 16-bit floats, and for 64-bit ones too where the driver ties the two modes (AMD). A device that cannot preserve them filters in single
-    // precision. NVIDIA keeps them without the mode, its default is as close to the CPU implementation, and the mode costs its filter about 3% (RTX 4060 Ti,
-    // RGBH final vn).
+    // DenormPreserve for 16-bit floats, and for the widths the driver ties to them: 64-bit (AMD) or all (Mali on panvk). A device that cannot preserve them
+    // filters in single precision. NVIDIA keeps them without the mode, its default is as close to the CPU implementation, and the mode costs its filter about
+    // 3% (RTX 4060 Ti, RGBH final vn).
     if (!gpu.nvidiaDriver && props12.shaderDenormPreserveFloat16 == VK_TRUE) {
         if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL)
             gpu.fp16DenormPreserve = {16};
         else if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY && props12.shaderDenormPreserveFloat64 == VK_TRUE)
             gpu.fp16DenormPreserve = {16, 64};
+        else if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE && props12.shaderDenormPreserveFloat32 == VK_TRUE &&
+                 props12.shaderDenormPreserveFloat64 == VK_TRUE)
+            gpu.fp16DenormPreserve = {16, 32, 64};
     }
     gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && props12.shaderDenormPreserveFloat16 == VK_TRUE &&
                    (gpu.nvidiaDriver || !gpu.fp16DenormPreserve.empty());
@@ -1145,7 +1148,7 @@ struct KernelSpec {
 };
 
 // The words of a SPIR-V module with the execution mode DenormPreserve (and its capability) for each of `widths`: glslang keeps a single spirv_execution_mode
-// of a mode, where a driver tying the 16-bit mode to the 64-bit one needs both.
+// of a mode, where a driver tying the 16-bit mode to other widths needs one for each.
 std::vector<uint32_t> withDenormPreserve(std::span<const uint32_t> code, std::span<const uint32_t> widths) {
     if (widths.empty())
         return {code.begin(), code.end()};
