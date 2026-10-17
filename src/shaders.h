@@ -193,7 +193,8 @@ uint lane;
 
 // The reference block is read in quads of columns, REF4(y, q) holding columns 4q to 4q + 3 of row y (zero past BLOCK): from registers, or from shared memory
 // where one load serves four columns. In correlation form (SSD_CORRELATION) it holds -2r', r' = r - refMean, so that |r - f|^2 = refEnergy + sum(f'^2 - 2r'f'),
-// f' = f - refMean: one FMA per sample and candidate. The mean offset keeps the terms small where blocks are flat.
+// f' = f - refMean: one FMA per sample and candidate. The mean offset keeps the terms small where blocks are flat. Distances are single precision even for
+// half precision input: f16vec2 distances were slower and lost 1-7 dB against the CPU (measured).
 #define REF_QUADS ((BLOCK + 3) / 4)
 float refMean;
 float refEnergy;
