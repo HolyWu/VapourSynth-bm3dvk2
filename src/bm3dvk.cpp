@@ -1501,15 +1501,8 @@ public:
     Filter(NodePtr node, NodePtr refNode, const Params& params, const Gpu& gpu, VSCore* core, const VSAPI& vsapi)
         : vsapi_{&vsapi}, node_{std::move(node)}, refNode_{std::move(refNode)}, vi_{*vsapi.getVideoInfo(node_.get())}, params_{params}, gpu_{gpu},
           plan_{makePlan(params_, vi_, gpu_)}, preamble_{buildPreamble(params_, plan_, gpu_)},
-          convert_{createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false})},
-          blockMatch_{createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true})},
-          filter_{createKernel(gpu_, core, {"BM3D filter", filterSource(params_, preamble_, plan_.zScalar),
-                                            filterLayout(params_, plan_), sizeof(FilterPush), true})},
-          normalize_{createKernel(gpu_, core,
-                                  {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false})},
           timer_{profilingRequested() ? std::make_unique<KernelTimer>(gpu_) : nullptr}, pool_{createPool(core)} {
-        if (plan_.pingpong)
-            uploadCosTable(core);
+        // Working buffers come before the kernels, so that sizes past the device's limits fail without compiling them.
         if (params_.radius > 0)
             persistent_ = createWorkBuffers([&](int64_t bytes) { return persistentBuffers_.emplace_back(createBuffer(gpu_, core, bytes)).buffer; });
         else // Spatial filters create their working buffers per frame, so only their sizes are checked here.
@@ -1517,6 +1510,13 @@ public:
                 checkBufferSize(gpu_, bytes);
                 return VkBuffer{VK_NULL_HANDLE};
             });
+        convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false});
+        blockMatch_ = createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true});
+        filter_ = createKernel(gpu_, core,
+                               {"BM3D filter", filterSource(params_, preamble_, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true});
+        normalize_ = createKernel(gpu_, core, {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false});
+        if (plan_.pingpong)
+            uploadCosTable(core);
     }
 
     std::vector<VSFilterDependency> dependencies() const {
