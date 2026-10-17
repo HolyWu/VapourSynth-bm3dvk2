@@ -549,10 +549,18 @@ void lowestTwo(uint count, bool skipInf, out float d0, out uint i0, out float d1
 }
 
 #if RADIUS > 0
-// Whether a predictive search stops before its match of rank n, of distance minD: the match ranks n + #{rest distances <= minD} in the rest set, both growing
-// with n; the first PS_NUM matches are still needed as the next frame's search centers.
+// Whether rest entries precede a predictive match of equal distance: ties go to the earlier frame (see mergeRest), so they do when searching forward.
+bool restFirst;
+
+// Whether a predictive search stops before its match of rank n, of distance minD: the match ranks n + #{rest entries preceding it} in the rest set, both
+// growing with n; the first PS_NUM matches are still needed as the next frame's search centers.
 bool predictiveCut(bool full, uint n, uint nr, float minD) {
-    return !full && n >= uint(PS_NUM) && (n >= GROUP - 1 || (GROUP - 2 - n < nr && restD[sg][GROUP - 2 - n] <= minD));
+    if (full || n < uint(PS_NUM))
+        return false;
+    if (n >= GROUP - 1)
+        return true;
+    const uint bound = GROUP - 2 - n;
+    return bound < nr && (restFirst ? restD[sg][bound] <= minD : restD[sg][bound] < minD);
 }
 #endif
 
@@ -905,16 +913,17 @@ uint predictiveSearch(uint numCenters, uint offset, uint nr) {
     return search(offset, false, ivec2(-1), GROUP, windows, nr);
 }
 
-// Keeps the GROUP - 1 smallest (distance, concatenation index) entries of the rest set and the frame list in listD/K. Both sets are small and hold unique keys,
-// so every element finds its rank directly instead of in selection rounds.
-uint mergeRest(uint nr, uint nl, uint concatBase, uint frame) {
+// Keeps the GROUP - 1 smallest (distance, key) entries of the rest set and the frame list in listD/K, the key of a match being frame * GROUP + its rank in its
+// frame's list: as a frame lists its matches by (distance, position), equal distances order by frame and position like the CPU implementation. Both sets are
+// small and hold unique keys, so every element finds its rank directly instead of in selection rounds.
+uint mergeRest(uint nr, uint nl, uint frame) {
     const uint total = nr + nl;
     for (uint i = lane; i < total; i += SG) {
         const float d = i < nr ? restD[sg][i] : listD[sg][i - nr];
-        const uint c = i < nr ? restC[sg][i] : concatBase + i - nr;
+        const uint c = i < nr ? restC[sg][i] : frame * GROUP + i - nr;
         uint rank = 0;
         for (uint j = 0; j < total; ++j)
-            rank += keyLess(j < nr ? restD[sg][j] : listD[sg][j - nr], j < nr ? restC[sg][j] : concatBase + j - nr, d, c) ? 1 : 0;
+            rank += keyLess(j < nr ? restD[sg][j] : listD[sg][j - nr], j < nr ? restC[sg][j] : frame * GROUP + j - nr, d, c) ? 1 : 0;
         if (rank < GROUP - 1) {
             STAGE(rank) = floatBitsToUint(d);
             STAGE(GROUP + rank) = c;
@@ -1002,10 +1011,10 @@ void main() {
         if (lane == 0)
             counts.counts[slot] = n + 1;
 #else
-        // The rest set starts with the current frame's matches, concatenation indices 1.. after the reference block.
+        // The rest set starts with the current frame's matches, keyed as in mergeRest.
         for (uint i = lane; i < n; i += SG) {
             restD[sg][i] = listD[sg][i];
-            restC[sg][i] = i + 1;
+            restC[sg][i] = pc.cur * GROUP + i;
             restP[sg][i] = listK[sg][i];
             restF[sg][i] = pc.cur;
         }
@@ -1016,12 +1025,12 @@ void main() {
         syncSubgroup();
         const uint numCurCenters = min(n + 1, uint(PS_NUM));
         uint nr = n;
-        uint concat = n + 1;
 
         for (int dir = -1; dir <= 1; dir += 2) {
             for (uint i = lane; i < numCurCenters; i += SG)
                 centers[sg][i] = curCenters[sg][i];
             syncSubgroup();
+            restFirst = dir > 0;
             uint numCenters = numCurCenters;
             for (int f = int(pc.cur) + dir; f >= 0 && f < int(pc.numFrames); f += dir) {
                 const uint nl = predictiveSearch(numCenters, frameOffset(uint(f)), nr);
@@ -1029,8 +1038,7 @@ void main() {
                 saveCenters(nl);
                 if (nl > 0)
                     numCenters = min(nl, uint(PS_NUM));
-                nr = mergeRest(nr, nl, concat, uint(f));
-                concat += nl;
+                nr = mergeRest(nr, nl, uint(f));
             }
         }
 
