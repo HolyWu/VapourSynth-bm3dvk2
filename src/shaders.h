@@ -645,7 +645,7 @@ uint selectSlots(uint k) {
 // its third smallest distance, so that the rounds need no refills and leave candD as it is. A cached element tied with the third distance may follow an
 // uncached one of that distance: such a head takes key 0, as does the third, and once a round selects one of them, false is returned for mergeCandidates to run
 // as usual.
-bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint n) {
+bool selectCached(uint nc, uint k, bool full, uint nr, out uint n) {
     float d0, d1, d2;
     uint i0, i1;
     lowestTwo(nc, true, d0, i0, d1, i1, d2);
@@ -704,17 +704,14 @@ bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint 
     float head = d0;
     uint headKey = d0 == d2 ? 0u : key0;
     uint pops = 0;
-    bool cutHere = false;
     for (n = 0; n < k; ++n) {
         float minD;
         const uint winner = argMin(head, headKey, minD);
         if (minD == INF)
             break;
 #if RADIUS > 0
-        if (predictiveCut(full, n, nr, minD)) {
-            cutHere = true;
+        if (predictiveCut(full, n, nr, minD))
             break;
-        }
 #endif
         if (lane == winner) {
             listD[sg][n] = minD;
@@ -727,19 +724,18 @@ bool selectCached(uint nc, uint k, bool full, uint nr, inout bool cut, out uint 
     syncSubgroup();
     if (subgroupBallotBitCount(subgroupBallot(pops > 2 || (pops > 0 && (pops == 1 ? d0 : d1) == d2))) != 0)
         return false;
-    cut = cut || cutHere;
     return true;
 }
 #endif
 
 // Selects the k smallest (distance, position) pairs of listD/K[0, na) and the candidates [base, base + nc) held in candD[0, nc) into listD/K, ascending.
 // Distances of INF are never selected. Each lane caches the two smallest elements it owns (lane, lane + SG, ...); a lane that wins a round promotes its
-// runner-up, and only once that is used up does the whole subgroup rescan the lane's elements to refill its minimum. A predictive search stops early, setting
-// cut, once its next match could no longer enter the nr entries of the rest set (see mergeRest). A single chunk tries selectCached first.
-uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr, inout bool cut) {
+// runner-up, and only once that is used up does the whole subgroup rescan the lane's elements to refill its minimum. A predictive search stops early once its
+// next match could no longer enter the nr entries of the rest set (see mergeRest). A single chunk tries selectCached first.
+uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr) {
 #if SINGLE_CHUNK && GROUP * 2 <= SG
     uint selected;
-    if (selectCached(nc, k, full, nr, cut, selected))
+    if (selectCached(nc, k, full, nr, selected))
         return selected;
 #endif
     const uint total = na + nc;
@@ -773,10 +769,8 @@ uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr, in
         if (minD == INF)
             break;
 #if RADIUS > 0
-        if (predictiveCut(full, n, nr, minD)) {
-            cut = true;
+        if (predictiveCut(full, n, nr, minD))
             break;
-        }
 #endif
         const bool promote = subgroupBallotBitExtract(subgroupBallot(nextKnown), winner);
         if (lane == winner) {
@@ -838,8 +832,8 @@ uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr, in
 }
 #endif
 
-// Block matching over the first `windows` windows: the k best matches end up in listD/K (see mergeCandidates for nr and cut).
-uint search(uint offset, bool full, ivec2 refPos, uint k, uint windows, uint nr, inout bool cut) {
+// Block matching over the first `windows` windows: the k best matches end up in listD/K (see mergeCandidates for nr).
+uint search(uint offset, bool full, ivec2 refPos, uint k, uint windows, uint nr) {
     const uint total = windows * SEARCH_SLOTS(full);
     uint n = 0;
     for (uint base = 0; base < total; base += CHUNK) {
@@ -854,16 +848,15 @@ uint search(uint offset, bool full, ivec2 refPos, uint k, uint windows, uint nr,
 #if SLOT_KEYS
         n = selectSlots(k);
 #else
-        n = mergeCandidates(n, nc, k, base, full, nr, cut);
+        n = mergeCandidates(n, nc, k, base, full, nr);
 #endif
     }
     return n;
 }
 
 #if RADIUS > 0
-// Predictive search in another frame over the union of the windows around the centers. Returns the number of matches; cut tells that it stopped short, its
-// remaining matches ranking past the rest set.
-uint predictiveSearch(uint numCenters, uint offset, uint nr, inout bool cut) {
+// Predictive search in another frame over the union of the windows around the centers. Returns the number of matches.
+uint predictiveSearch(uint numCenters, uint offset, uint nr) {
 #if PS_UNION
     // The windows go to records 1..numCenters. Where their bounding box fits the layout, it is searched as the single window 0; otherwise they move down to
     // records 0.. and are searched one after another.
@@ -909,7 +902,7 @@ uint predictiveSearch(uint numCenters, uint offset, uint nr, inout bool cut) {
         searchWin[sg][c] = windowAround(unpackPos(centers[sg][c]), PS_RANGE, PS_STEP);
 #endif
     syncSubgroup();
-    return search(offset, false, ivec2(-1), GROUP, windows, nr, cut);
+    return search(offset, false, ivec2(-1), GROUP, windows, nr);
 }
 
 // Keeps the GROUP - 1 smallest (distance, concatenation index) entries of the rest set and the frame list in listD/K. Both sets are small and hold unique keys,
@@ -1002,8 +995,7 @@ void main() {
             searchWin[sg][0] = windowAround(refPos, BM_RANGE, BM_STEP);
         syncSubgroup();
 
-        bool fullCut = false;
-        const uint n = search(curOffset, true, refPos, GROUP - 1, 1, 0, fullCut);
+        const uint n = search(curOffset, true, refPos, GROUP - 1, 1, 0);
 #if RADIUS == 0
         for (uint i = lane; i < n; i += SG)
             matches.entries[out0 + 1 + i] = listK[sg][i];
@@ -1032,26 +1024,17 @@ void main() {
             syncSubgroup();
             uint numCenters = numCurCenters;
             for (int f = int(pc.cur) + dir; f >= 0 && f < int(pc.numFrames) && numCenters > 0; f += dir) {
-                bool cut = false;
-                const uint nl = predictiveSearch(numCenters, frameOffset(uint(f)), nr, cut);
+                const uint nl = predictiveSearch(numCenters, frameOffset(uint(f)), nr);
                 saveCenters(nl);
                 numCenters = min(nl, uint(PS_NUM));
                 nr = mergeRest(nr, nl, concat, uint(f));
-                // A cut frame had more matches than it listed, so the concatenation is truncated whatever follows.
-                concat += cut ? nl + GROUP : nl;
+                concat += nl;
             }
         }
 
-        // Without truncation the CPU implementation keeps the concatenation order, otherwise it sorts by distance.
-        for (uint i = lane; i < nr; i += SG) {
-            uint rank = i;
-            if (concat <= GROUP) {
-                rank = 0;
-                for (uint j = 0; j < nr; ++j)
-                    rank += restC[sg][j] < restC[sg][i] ? 1 : 0;
-            }
-            matches.entries[out0 + 1 + rank] = uvec2(restP[sg][i], restF[sg][i]);
-        }
+        // Like the CPU implementation, the members follow the reference block sorted by distance, as the rest set holds them.
+        for (uint i = lane; i < nr; i += SG)
+            matches.entries[out0 + 1 + i] = uvec2(restP[sg][i], restF[sg][i]);
         if (lane == 0)
             counts.counts[slot] = nr + 1;
 #endif
