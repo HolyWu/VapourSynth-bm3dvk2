@@ -803,7 +803,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // Spatial windows no wider than a subgroup are register bound: a reference in shared memory frees the registers their selection network needs (measured).
     // Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers; RADV indexes it through branch ladders and AMD's Windows compiler
     // through scratch memory, both far slower than shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
-    plan.bmRefInRegs = gpu.nvidiaDriver && p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.bmSlotKeys);
+    plan.bmRefInRegs = gpu.nvidiaDriver && p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.fullCols > sg);
     // Without matching (NO_MATCHING) the kernel declares no search arrays. The limit includes padding, and a driver laying the arrays out in another order
     // may pad each vec4 one (the search windows and a shared reference block) by up to 12 bytes.
     const auto bmShared = [&](int subgroups, int64_t chunk, bool singleChunk) {
