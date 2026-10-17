@@ -583,11 +583,6 @@ Params parseParams(const ArgReader& args, const VSVideoInfo& vi, bool wiener) {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Kernel configuration
 
-struct CosTable {
-    std::vector<float> values;
-    int zBase{};
-};
-
 struct Plan {
     int width{};
     int height{};
@@ -632,7 +627,6 @@ struct Plan {
     int tileRefs{};
     int tileSpan{};
     bool accTile{};
-    CosTable cosTable;
 };
 
 int64_t storeBytes(const Plan& plan) {
@@ -664,15 +658,14 @@ int64_t windowBytes(const Params& p, const Plan& plan, int frames) {
 }
 
 // cos(pi * q / (2n)), q in [0, 4n), for each transform size above the codelets: the block size first, then 33..group size.
-CosTable buildCosTable(const Params& p) {
-    CosTable table;
+std::vector<float> buildCosTable(const Params& p) {
+    std::vector<float> table;
     const auto append = [&table](int n) {
         for (int q = 0; q < n * 4; ++q)
-            table.values.push_back(static_cast<float>(std::cos(std::numbers::pi * q / (2.0 * n))));
+            table.push_back(static_cast<float>(std::cos(std::numbers::pi * q / (2.0 * n))));
     };
     if (p.blockSize > dct::maxCodeletSize)
         append(p.blockSize);
-    table.zBase = static_cast<int>(table.values.size());
     for (int n = dct::maxCodeletSize + 1; n <= p.groupSize; ++n)
         append(n);
     return table;
@@ -905,9 +898,6 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         const int64_t budget = std::min(globalGroupBudget, gpu.maxStorageRange);
         plan.filterGroupsX = std::clamp(static_cast<int>(budget / (plan.groupBytes * plan.planes)), 1, plan.filterGroupsX);
     }
-
-    if (plan.pingpong)
-        plan.cosTable = buildCosTable(p);
     return plan;
 }
 
@@ -994,7 +984,8 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"TILE_SPAN", std::to_string(plan.tileSpan)},
         {"SEARCH_MARGIN", std::to_string(plan.searchMargin)},
         {"PINGPONG", plan.pingpong ? "1" : "0"},
-        {"Z_TABLE_BASE", std::to_string(plan.cosTable.zBase)},
+        // The group size tables follow the block size table (see buildCosTable).
+        {"Z_TABLE_BASE", std::to_string(p.blockSize > dct::maxCodeletSize ? p.blockSize * 4 : 0)},
         {"MAX_CODELET", std::to_string(dct::maxCodeletSize)},
         {"COEF_TABLE", coef},
         {"FLT_EPSILON", floatBits(std::numeric_limits<float>::epsilon())},
@@ -1549,8 +1540,7 @@ class Filter {
 public:
     Filter(NodePtr node, NodePtr refNode, const Params& params, const Gpu& gpu, VSCore* core, const VSAPI& vsapi)
         : vsapi_{&vsapi}, node_{std::move(node)}, refNode_{std::move(refNode)}, vi_{*vsapi.getVideoInfo(node_.get())}, params_{params}, gpu_{gpu},
-          plan_{makePlan(params_, vi_, gpu_)}, preamble_{buildPreamble(params_, plan_, gpu_)},
-          timer_{profilingRequested() ? std::make_unique<KernelTimer>(gpu_) : nullptr}, pool_{createPool(core)} {
+          plan_{makePlan(params_, vi_, gpu_)}, timer_{profilingRequested() ? std::make_unique<KernelTimer>(gpu_) : nullptr}, pool_{createPool(core)} {
         // Working buffers come before the kernels, so that sizes past the device's limits fail without compiling them.
         if (params_.radius > 0)
             persistent_ = createWorkBuffers([&](int64_t bytes) { return persistentBuffers_.emplace_back(createBuffer(gpu_, core, bytes)).buffer; });
@@ -1568,11 +1558,13 @@ public:
         if (plan_.fp16Input)
             for (const uint32_t width : gpu_.fp16DenormPreserve)
                 modes.push_back({modeDenormPreserve, capabilityDenormPreserve, width});
+        const std::string preamble = buildPreamble(params_, plan_, gpu_);
+        const auto kernelSource = [&preamble](std::string_view kernel) { return preamble + std::string{shader::common} + std::string{kernel}; };
         convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false, modes});
         blockMatch_ =
             createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true, modes});
         filter_ = createKernel(
-            gpu_, core, {"BM3D filter", filterSource(params_, preamble_, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true, modes});
+            gpu_, core, {"BM3D filter", filterSource(params_, preamble, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true, modes});
         normalize_ = createKernel(gpu_, core,
                                   {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false, modes});
         if (plan_.pingpong)
@@ -1654,8 +1646,6 @@ private:
         std::vector<FramePtr> ref;
     };
 
-    std::string kernelSource(std::string_view kernel) const { return preamble_ + std::string{shader::common} + std::string{kernel}; }
-
     // The planes of the reference window anything reads, as a mask: plane 0 for block matching and the filtered planes.
     uint32_t refPlanes() const {
         uint32_t planes = 1;
@@ -1698,7 +1688,6 @@ private:
     Params params_;
     Gpu gpu_;
     Plan plan_;
-    std::string preamble_;
     Kernel convert_;
     Kernel blockMatch_;
     Kernel filter_;
@@ -1730,7 +1719,7 @@ Filter::Sources Filter::getSources(int n, VSFrameContext* frameCtx) const {
 }
 
 void Filter::uploadCosTable(VSCore* core) {
-    const std::vector<float>& values = plan_.cosTable.values;
+    const std::vector<float> values = buildCosTable(params_);
     const auto bytes = static_cast<int64_t>(values.size() * sizeof(float));
     cosTable_ = createBuffer(gpu_, core, bytes);
 
