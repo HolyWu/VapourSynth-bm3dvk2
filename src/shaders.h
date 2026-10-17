@@ -1258,11 +1258,12 @@ uint statElem(uint s) {
 #endif
 
 #if PINGPONG
-// Unnormalized DCT-II (forward) and DCT-III (inverse) matrix entries for sizes without a codelet, read from a table of cos(pi * q / (2 * n)), q in [0, 4n).
-float dctCoef(uint tableOffset, uint n, uint m, uint j, bool inverse) {
+// Unnormalized DCT-II (forward) and DCT-III (inverse) matrix entries of blocks without a codelet, read from the table of cos(pi * q / (2 * BLOCK)),
+// q in [0, 4 * BLOCK), that leads the cos table.
+float dctCoef(uint m, uint j, bool inverse) {
     if (inverse)
-        return j == 0 ? 1.0 : 2.0 * cosTable.data[tableOffset + j * (m * 2 + 1) % (n * 4)];
-    return 2.0 * cosTable.data[tableOffset + (j * 2 + 1) * m % (n * 4)];
+        return j == 0 ? 1.0 : 2.0 * cosTable.data[j * (m * 2 + 1) % (BLOCK * 4)];
+    return 2.0 * cosTable.data[(j * 2 + 1) * m % (BLOCK * 4)];
 }
 
 uint zTableOffset(uint n) {
@@ -1340,17 +1341,18 @@ void colPass(uint k, uint numGroups, bool inverse) {
     }
 }
 #else
-// Out of place matrix forms of the passes, src -> dst, for block sizes without a codelet. Like the matrix z-pass and aggregate, they sum in single precision
-// even for half precision groups: half precision sums of so many terms lose up to 11 dB against the CPU (block_size=64) for at most 5% speed.
-void rowPass(uint k, uint numGroups, bool inverse, uint src, uint dst) {
+// Out of place matrix forms of the passes for block sizes without a codelet: the forward row pass into the second buffer (aggregate inlines the inverse
+// one), the column pass src -> dst. Like the matrix z-pass and aggregate, they sum in single precision even for half precision groups: half precision sums
+// of so many terms lose up to 11 dB against the CPU (block_size=64) for at most 5% speed.
+void rowPass(uint k, uint numGroups) {
     for (uint e = gl_LocalInvocationIndex; e < numGroups * k * HB * BLOCK; e += WG) {
         const uint m = e % BLOCK;
         const uint line = e / BLOCK;
         const uint base = line / (k * HB) * GRP_T + line % (k * HB) * BLOCK_P;
         vec2 sum = vec2(0.0);
         for (uint j = 0; j < BLOCK; ++j)
-            sum += dctCoef(0, BLOCK, m, j, inverse) * vec2(G(src + base + j));
-        G(dst + base + m) = T(sum);
+            sum += dctCoef(m, j, false) * vec2(G(base + j));
+        G(BUF_T + base + m) = T(sum);
     }
 }
 
@@ -1363,11 +1365,11 @@ void colPass(uint k, uint numGroups, bool inverse, uint src, uint dst) {
         vec2 sum = vec2(0.0);
         for (uint j = 0; j < HB; ++j) {
             const vec2 v = vec2(G(src + base + j * BLOCK_P));
-            sum.x += dctCoef(0, BLOCK, q * 2, j * 2, inverse) * v.x;
-            sum.y += q * 2 + 1 < BLOCK ? dctCoef(0, BLOCK, q * 2 + 1, j * 2, inverse) * v.x : 0.0;
+            sum.x += dctCoef(q * 2, j * 2, inverse) * v.x;
+            sum.y += q * 2 + 1 < BLOCK ? dctCoef(q * 2 + 1, j * 2, inverse) * v.x : 0.0;
             if (j * 2 + 1 < BLOCK) {
-                sum.x += dctCoef(0, BLOCK, q * 2, j * 2 + 1, inverse) * v.y;
-                sum.y += q * 2 + 1 < BLOCK ? dctCoef(0, BLOCK, q * 2 + 1, j * 2 + 1, inverse) * v.y : 0.0;
+                sum.x += dctCoef(q * 2, j * 2 + 1, inverse) * v.y;
+                sum.y += q * 2 + 1 < BLOCK ? dctCoef(q * 2 + 1, j * 2 + 1, inverse) * v.y : 0.0;
             }
         }
         G(dst + base + q * BLOCK_P) = T(sum);
@@ -1498,7 +1500,7 @@ void aggregate(uint k, float numWeight, float denWeight) {
         const uint m = e % BLOCK;
         vec2 sum = vec2(0.0);
         for (uint j = 0; j < BLOCK; ++j)
-            sum += dctCoef(0, BLOCK, m, j, true) * vec2(G(BUF_T + z * BLK_T + p * BLOCK_P + j));
+            sum += dctCoef(m, j, true) * vec2(G(BUF_T + z * BLK_T + p * BLOCK_P + j));
         accumulatePair(z, p, m, sum * numWeight);
     }
 #endif
@@ -1517,7 +1519,7 @@ void filterGroup(uint slot) {
     SYNC();
     colPass(k, WIENER + 1, false);
 #else
-    rowPass(k, WIENER + 1, false, 0, BUF_T);
+    rowPass(k, WIENER + 1);
     SYNC();
     colPass(k, WIENER + 1, false, BUF_T, 0);
 #endif
