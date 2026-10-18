@@ -312,6 +312,7 @@ enum class Profile { fast, lc, np, high, vn };
 struct Params {
     bool wiener{};
     std::array<double, maxPlanes> sigma{};
+    uint32_t activeMask{}; // the planes of positive sigma, which are filtered
     int radius{};
     int blockSize{};
     int blockStep{};
@@ -537,6 +538,9 @@ Params parseParams(const ArgReader& args, const VSVideoInfo& vi, bool wiener) {
     const int radius = intArg(args, "radius", defaultRadius(*profile), {0, maxRadius});
     Params p = profileDefaults(*profile, wiener, radius > 0);
     p.sigma = sigma;
+    for (int plane = 0; plane < vi.format.numPlanes; ++plane)
+        if (sigma[plane] > 0.0)
+            p.activeMask |= 1u << plane;
     p.radius = radius;
     p.blockSize = intArg(args, "block_size", p.blockSize, {1, maxBlockSize});
     if (p.blockSize > vi.width || p.blockSize > vi.height)
@@ -733,11 +737,10 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
 
     // Coefficients are in the domain prescaled by the inverse square root of the transform gain, where the gain cancels.
     const std::array<double, 4> thresholdFactors{1.0, std::numbers::sqrt2, 2.0, std::sqrt(8.0)};
+    plan.activeMask = p.activeMask;
     for (int plane = 0; plane < plan.planes; ++plane) {
-        if (p.sigma[plane] > 0.0) {
+        if ((p.activeMask >> plane & 1) != 0)
             plan.activePlanes.push_back(plane);
-            plan.activeMask |= 1u << plane;
-        }
         const double sigma = p.sigma[plane] / 255.0 * norms[plane];
         for (int flag = 0; flag < 4; ++flag)
             plan.coef[plane * 4 + flag] = static_cast<float>(p.wiener ? std::max(sigma * sigma * (1 << flag), double{std::numeric_limits<float>::min()})
@@ -2054,7 +2057,7 @@ void VS_CC filterCreate(const VSMap* in, VSMap* out, void*, VSCore* core, const 
         }
 
         const Params params = parseParams(ArgReader{*in, *vsapi}, vi, refNode != nullptr);
-        if (std::ranges::all_of(std::span{params.sigma}.first(vi.format.numPlanes), [](double s) { return s == 0.0; })) {
+        if (params.activeMask == 0) {
             vsapi->mapConsumeNode(out, "clip", node.release(), maAppend);
             return;
         }
