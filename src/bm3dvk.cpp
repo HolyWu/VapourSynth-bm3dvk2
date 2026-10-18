@@ -629,6 +629,9 @@ struct Plan {
     int tileRefs{};
     int tileSpan{};
     bool accTile{};
+    int64_t normalizeShared{};
+    int64_t bmShared{};
+    int64_t filterShared{};
 };
 
 int64_t storeBytes(const Plan& plan) {
@@ -718,8 +721,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
 
     // Mirrors the shared arrays of the normalize kernel.
     const int64_t normalizeSpan = imageTile + p.blockSize - 1;
-    const int64_t normalizeShared = (normalizeSpan + imageTile) * normalizeSpan * sizeof(float);
-    if (normalizeShared > gpu.maxSharedMemory)
+    plan.normalizeShared = (normalizeSpan + imageTile) * normalizeSpan * sizeof(float);
+    if (plan.normalizeShared > gpu.maxSharedMemory)
         fail("\"block_size\" is too large for the device's shared memory");
 
     const std::array<double, maxPlanes> norms = matrixNorms(p.matrix);
@@ -841,6 +844,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
                 fail("block matching does not fit into the device's shared memory");
         }
     }
+    plan.bmShared = bmShared(plan.bmSubgroups, plan.bmChunk, plan.bmSingleChunk);
 
     // Mirrors the shared arrays of the filter kernel. A block row holds 2 * halfBlock elements; for 8-byte elements an odd stride puts the rows a pass reads at
     // once into distinct banks, while 4-byte elements fare better with rows aligned for 16-byte loads (measured).
@@ -886,6 +890,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         --plan.blockPadded;
         plan.groupBytes -= paddingBytes;
     }
+    plan.filterShared = (plan.globalGroup ? partialShared : plan.groupBytes + filterFixedShared) + (plan.accTile ? tileShared : 0);
 
     // Matching and filtering run in batches of whole tile rows of reference blocks, bounded by the size of the matches, or of fewer rows where the bound leaves
     // no whole tile row.
@@ -1147,6 +1152,7 @@ struct KernelSpec {
     uint32_t pushSize{};
     bool pinSubgroup{};
     std::span<const FloatMode> floatModes;
+    int64_t sharedBytes{}; // as makePlan sizes the kernel's shared arrays
 };
 
 // The words of a SPIR-V module with `modes` added (and their capabilities): glslang keeps a single spirv_execution_mode of a mode, where a driver tying the
@@ -1183,6 +1189,51 @@ std::vector<uint32_t> withFloatModes(std::span<const uint32_t> code, std::span<c
         }
     }
     return words;
+}
+
+// Bytes of the workgroup variables of a SPIR-V module, unpadded: the shared arrays a kernel declares, which makePlan mirrors by hand.
+int64_t workgroupBytes(std::span<const uint32_t> code) {
+    constexpr size_t headerWords = 5;
+    constexpr uint32_t opTypeInt = 21;
+    constexpr uint32_t opTypeFloat = 22;
+    constexpr uint32_t opTypeVector = 23;
+    constexpr uint32_t opTypeArray = 28;
+    constexpr uint32_t opTypePointer = 32;
+    constexpr uint32_t opConstant = 43;
+    constexpr uint32_t opVariable = 59;
+    constexpr uint32_t storageWorkgroup = 4;
+    std::map<uint32_t, int64_t> sizes;
+    std::map<uint32_t, uint32_t> constants;
+    std::map<uint32_t, uint32_t> pointees;
+    int64_t bytes{};
+    for (size_t i = headerWords; i < code.size(); i += code[i] >> 16) {
+        const std::span<const uint32_t> w = code.subspan(i, code[i] >> 16);
+        switch (w[0] & 0xFFFF) {
+        case opTypeInt:
+        case opTypeFloat:
+            sizes[w[1]] = w[2] / 8;
+            break;
+        case opTypeVector:
+            sizes[w[1]] = sizes[w[2]] * w[3];
+            break;
+        case opTypeArray:
+            sizes[w[1]] = sizes[w[2]] * constants[w[3]];
+            break;
+        case opTypePointer:
+            pointees[w[1]] = w[3];
+            break;
+        case opConstant:
+            constants[w[2]] = w[3];
+            break;
+        case opVariable:
+            if (w[3] == storageWorkgroup)
+                bytes += sizes[pointees[w[1]]];
+            break;
+        default:
+            break;
+        }
+    }
+    return bytes;
 }
 
 Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
@@ -1222,6 +1273,8 @@ Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
         fail("shader compilation failed: "s + err.data());
     size_t codeBytes{};
     const uint32_t* code = gpu.vkapi->getGPUShaderCode(shader.get(), &codeBytes);
+    if (workgroupBytes({code, codeBytes / sizeof(uint32_t)}) > spec.sharedBytes)
+        fail(std::string{spec.name} + " declares more shared memory than its plan accounts for");
     const std::vector<uint32_t> words = withFloatModes({code, codeBytes / sizeof(uint32_t)}, spec.floatModes);
 
     const VkShaderModuleCreateInfo moduleInfo{
@@ -1562,13 +1615,15 @@ public:
                 modes.push_back({modeDenormPreserve, capabilityDenormPreserve, width});
         const std::string preamble = buildPreamble(params_, plan_, gpu_);
         const auto kernelSource = [&preamble](std::string_view kernel) { return preamble + std::string{shader::common} + std::string{kernel}; };
-        convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false, modes});
-        blockMatch_ =
-            createKernel(gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true, modes});
-        filter_ = createKernel(
-            gpu_, core, {"BM3D filter", filterSource(params_, preamble, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true, modes});
+        convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false, modes, 0});
+        blockMatch_ = createKernel(
+            gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true, modes, plan_.bmShared});
+        filter_ = createKernel(gpu_, core,
+                               {"BM3D filter", filterSource(params_, preamble, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true, modes,
+                                plan_.filterShared});
         normalize_ = createKernel(gpu_, core,
-                                  {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false, modes});
+                                  {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false, modes,
+                                   plan_.normalizeShared});
         if (plan_.pingpong)
             uploadCosTable(core);
     }
