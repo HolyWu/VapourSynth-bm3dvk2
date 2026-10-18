@@ -29,6 +29,8 @@ inline constexpr std::string_view common = R"glsl(
 uint packPos(ivec2 p) { return (uint(p.y) << 16) | uint(p.x); }
 ivec2 unpackPos(uint p) { return ivec2(p & 0xFFFFu, p >> 16); }
 uint slotOf(uint frame) { return frame % SLOTS; }
+uint accNum(uint frame, ivec2 p) { return slotOf(frame) * ACC_SLOT + uint(p.y) * WIDTH + uint(p.x); }
+uint accDen(uint frame, ivec2 p) { return accNum(frame, p) + PLANE_SIZE; }
 ivec2 refPosition(uint row, uint col) { return min(ivec2(col, row) * BLOCK_STEP, ivec2(WIDTH, HEIGHT) - BLOCK); }
 )glsl";
 
@@ -102,7 +104,7 @@ float estimate(uint plane, ivec2 p) {
     for (uint i = gl_LocalInvocationIndex; i < SPAN * SPAN; i += IMAGE_TILE * IMAGE_TILE) {
         const ivec2 q = origin + ivec2(i % SPAN, i / SPAN);
         const bool inside = all(greaterThanEqual(q, ivec2(0))) && q.x < WIDTH && q.y < HEIGHT;
-        blockWeights[i / SPAN][i % SPAN] = inside ? accValue(plane, slotOf(pc.frame) * ACC_SLOT + PLANE_SIZE + uint(q.y) * WIDTH + uint(q.x)) : 0.0;
+        blockWeights[i / SPAN][i % SPAN] = inside ? accValue(plane, accDen(pc.frame, q)) : 0.0;
     }
     barrier();
     for (uint r = gl_LocalInvocationID.y; r < SPAN; r += IMAGE_TILE) {
@@ -117,7 +119,7 @@ float estimate(uint plane, ivec2 p) {
         den += rowSums[gl_LocalInvocationID.y + r][gl_LocalInvocationID.x];
     barrier();
     const bool inside = p.x < WIDTH && p.y < HEIGHT;
-    return inside ? accValue(plane, slotOf(pc.frame) * ACC_SLOT + uint(p.y) * WIDTH + uint(p.x)) / den : 0.0;
+    return inside ? accValue(plane, accNum(pc.frame, p)) / den : 0.0;
 }
 
 void main() {
@@ -1458,7 +1460,7 @@ void accumulatePair(uint z, uint p, uint x, vec2 v) {
     if (!accumulates(frame))
         return;
     const ivec2 pos = unpackPos(m.x) + ivec2(x, p * 2);
-    const uint i = slotOf(frame) * ACC_SLOT + uint(pos.y) * WIDTH + uint(pos.x);
+    const uint i = accNum(frame, pos);
 #if ACC_TILE
     if (frame == pc.firstFrame + pc.cur && groupInTile) {
         const uint t = uint(pos.y - tileOrigin.y) * TILE_SPAN + uint(pos.x - tileOrigin.x);
@@ -1485,7 +1487,7 @@ void aggregate(uint k, float numWeight, float denWeight) {
         const uint frame = pc.firstFrame + m.y;
         const ivec2 pos = unpackPos(m.x);
         if (accumulates(frame))
-            accumulate(slotOf(frame) * ACC_SLOT + PLANE_SIZE + uint(pos.y) * WIDTH + uint(pos.x), denWeight);
+            accumulate(accDen(frame, pos), denWeight);
     }
 #if BLOCK <= MAX_CODELET
     rowPass(k, 1, true);
@@ -1595,12 +1597,12 @@ void main() {
 
 #if ACC_TILE
         if (tileAccumulates) {
-            const uint base = slotOf(numFrame) * ACC_SLOT;
+            const uint base = accNum(numFrame, tileOrigin);
             for (uint i = gl_LocalInvocationIndex; i < uint(tileSize.x * tileSize.y); i += WG) {
                 const ivec2 q = ivec2(i % uint(tileSize.x), i / uint(tileSize.x));
                 const float v = tileValue(uint(q.y) * TILE_SPAN + uint(q.x));
                 if (v != 0.0)
-                    accumulate(base + uint(tileOrigin.y + q.y) * WIDTH + uint(tileOrigin.x + q.x), v);
+                    accumulate(base + uint(q.y) * WIDTH + uint(q.x), v);
             }
         }
         SYNC();
