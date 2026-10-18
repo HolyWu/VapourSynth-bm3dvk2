@@ -588,6 +588,7 @@ struct Plan {
     int height{};
     int planes{};
     std::vector<int> activePlanes;
+    uint32_t activeMask{};
     bool fp16Input{};
     bool fp16Math{};
     bool zScalar{};
@@ -731,8 +732,10 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // Coefficients are in the domain prescaled by the inverse square root of the transform gain, where the gain cancels.
     const std::array<double, 4> thresholdFactors{1.0, std::numbers::sqrt2, 2.0, std::sqrt(8.0)};
     for (int plane = 0; plane < plan.planes; ++plane) {
-        if (p.sigma[plane] > 0.0)
+        if (p.sigma[plane] > 0.0) {
             plan.activePlanes.push_back(plane);
+            plan.activeMask |= 1u << plane;
+        }
         const double sigma = p.sigma[plane] / 255.0 * norms[plane];
         for (int flag = 0; flag < 4; ++flag)
             plan.coef[plane * 4 + flag] = static_cast<float>(p.wiener ? std::max(sigma * sigma * (1 << flag), double{std::numeric_limits<float>::min()})
@@ -926,11 +929,8 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
     for (int i = 0; i < plan.planes * 4; ++i)
         coef += (i ? ", " : "") + floatBits(plan.coef[i]);
     std::string activePlanes;
-    int activeMask{};
-    for (const int plane : plan.activePlanes) {
+    for (const int plane : plan.activePlanes)
         activePlanes += (activePlanes.empty() ? "" : ", ") + std::to_string(plane);
-        activeMask |= 1 << plane;
-    }
 
     const std::vector<std::pair<std::string_view, std::string>> defines{
         {"WIDTH", std::to_string(plan.width)},
@@ -938,7 +938,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"PLANES", std::to_string(plan.planes)},
         {"ACC_PLANES", std::to_string(accPlanes)},
         {"ACTIVE_PLANES", activePlanes},
-        {"ACTIVE_MASK", std::to_string(activeMask)},
+        {"ACTIVE_MASK", std::to_string(plan.activeMask)},
         {"STORE_T", plan.fp16Input ? "float16_t" : "float"},
         {"T", fp16Math ? "f16vec2" : "vec2"},
         {"S", fp16Math ? "float16_t" : "float"},
@@ -1705,12 +1705,7 @@ private:
     };
 
     // The planes of the reference window anything reads, as a mask: plane 0 for block matching and the filtered planes.
-    uint32_t refPlanes() const {
-        uint32_t planes = 1;
-        for (const int plane : plan_.activePlanes)
-            planes |= 1u << plane;
-        return planes;
-    }
+    uint32_t refPlanes() const { return plan_.activeMask | 1u; }
 
     PoolPtr createPool(VSCore* core) const {
         std::array<char, errorSize> err{};
