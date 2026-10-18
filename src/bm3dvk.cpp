@@ -654,10 +654,10 @@ int64_t matchBytes(const Params& p) {
     return sizeof(uint32_t) * (p.radius > 0 ? 2 : 1);
 }
 
-// A window buffer of `frames` planes. Full-search items of several columns read up to (NX_FULL - 1) * BM_STEP samples past the right edge, past the last plane
-// at its last row; only the candidates rejected there take them.
-int64_t windowBytes(const Params& p, const Plan& plan, int frames) {
-    return (planeElements(plan) * frames + int64_t{plan.bmFullCols - 1} * p.bmStep) * storeBytes(plan);
+// A window buffer of a plane per ring slot. Full-search items of several columns read up to (NX_FULL - 1) * BM_STEP samples past the right edge, past the last
+// plane at its last row; only the candidates rejected there take them.
+int64_t windowBytes(const Params& p, const Plan& plan) {
+    return (planeElements(plan) * plan.slots + int64_t{plan.bmFullCols - 1} * p.bmStep) * storeBytes(plan);
 }
 
 // cos(pi * q / (2n)), q in [0, 4n), for each transform size above the codelets: the block size first, then 33..group size.
@@ -1813,9 +1813,9 @@ template <typename Make>
 WorkBuffers Filter::createWorkBuffers(Make buffer) const {
     WorkBuffers work;
     for (int plane = 0; plane < plan_.planes; ++plane) {
-        work.srcWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
+        work.srcWindow[plane] = buffer(windowBytes(params_, plan_));
         if (params_.wiener && (refPlanes() >> plane & 1) != 0)
-            work.refWindow[plane] = buffer(windowBytes(params_, plan_, plan_.slots));
+            work.refWindow[plane] = buffer(windowBytes(params_, plan_));
     }
     // Reference planes nothing reads take the descriptor of plane 0, which convert does not write for them.
     for (int plane = 1; plane < plan_.planes; ++plane)
