@@ -798,8 +798,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers; RADV indexes it through branch ladders and AMD's Windows compiler
     // through scratch memory, both far slower than shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
     plan.bmRefInRegs = gpu.nvidiaDriver && p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.fullCols > sg);
-    // Without matching (NO_MATCHING) the kernel declares no search arrays. The limit includes padding, and a driver laying the arrays out in another order
-    // may pad each vec4 one (the search windows and a shared reference block) by up to 12 bytes.
+    // Without matching (NO_MATCHING) the kernel declares no search arrays. The limit includes padding, and a driver laying the arrays out in another order may
+    // pad each vec4 one (the search windows and a shared reference block) by up to 12 bytes.
     const auto bmShared = [&](int subgroups, int64_t chunk, bool singleChunk) {
         if (plan.noMatching)
             return int64_t{0};
@@ -813,8 +813,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.psRowMajor = laneSpacing(plan.psCols) > 2;
     // Distances in correlation form take the reference block offset by its mean, which pays off for blocks larger than bmRefInRegsMax, always read from shared
     // memory. Smaller blocks keep plain differences wherever their reference lives: one in registers, which the compiler reads again from the window instead,
-    // loses with it (measured). The distance of a duplicate block is then a rounding residual, of up to 2 * FLT_EPSILON * n * (n + BLOCK) for n samples in
-    // [0, 1], rather than 0: smaller thresholds keep plain differences, which match duplicates as the CPU implementation does.
+    // loses with it (measured). The distance of a duplicate block is then a rounding residual, of up to 2 * FLT_EPSILON * n * (n + BLOCK) for n samples in [0,
+    // 1], rather than 0: smaller thresholds keep plain differences, which match duplicates as the CPU implementation does.
     const auto blockArea = static_cast<double>(p.blockSize) * p.blockSize;
     plan.bmCorrelation = p.blockSize > bmRefInRegsMax && plan.thSSE >= 2.0 * std::numeric_limits<float>::epsilon() * blockArea * (blockArea + p.blockSize);
     plan.bmSubgroups = std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);

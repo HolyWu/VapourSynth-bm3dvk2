@@ -193,8 +193,8 @@ uint lane;
 
 // The reference block is read in quads of columns, REF4(y, q) holding columns 4q to 4q + 3 of row y (zero past BLOCK): from registers, or from shared memory
 // where one load serves four columns. In correlation form (SSD_CORRELATION) it holds -2r', r' = r - refMean, so that |r - f|^2 = refEnergy + sum(f'^2 - 2r'f'),
-// f' = f - refMean: one FMA per sample and candidate. The mean offset keeps the terms small where blocks are flat. Distances are single precision even for
-// half precision input: f16vec2 distances were slower and lost 1-7 dB against the CPU (measured).
+// f' = f - refMean: one FMA per sample and candidate. The mean offset keeps the terms small where blocks are flat. Distances are single precision even for half
+// precision input: f16vec2 distances were slower and lost 1-7 dB against the CPU (measured).
 #define REF_QUADS ((BLOCK + 3) / 4)
 float refMean;
 float refEnergy;
@@ -1260,8 +1260,8 @@ uint statElem(uint s) {
 #endif
 
 #if PINGPONG
-// Unnormalized DCT-II (forward) and DCT-III (inverse) matrix entries of blocks without a codelet, read from the table of cos(pi * q / (2 * BLOCK)),
-// q in [0, 4 * BLOCK), that leads the cos table.
+// Unnormalized DCT-II (forward) and DCT-III (inverse) matrix entries of blocks without a codelet, read from the table of cos(pi * q / (2 * BLOCK)), q in [0, 4
+// * BLOCK), that leads the cos table.
 float dctCoef(uint m, uint j, bool inverse) {
     if (inverse)
         return j == 0 ? 1.0 : 2.0 * cosTable.data[j * (m * 2 + 1) % (BLOCK * 4)];
@@ -1343,9 +1343,9 @@ void colPass(uint k, uint numGroups, bool inverse) {
     }
 }
 #else
-// Out of place matrix forms of the passes for block sizes without a codelet: the forward row pass into the second buffer (aggregate inlines the inverse
-// one), the column pass src -> dst. Like the matrix z-pass and aggregate, they sum in single precision even for half precision groups: half precision sums
-// of so many terms lose up to 11 dB against the CPU (block_size=64) for at most 5% speed.
+// Out of place matrix forms of the passes for block sizes without a codelet: the forward row pass into the second buffer (aggregate inlines the inverse one),
+// the column pass src -> dst. Like the matrix z-pass and aggregate, they sum in single precision even for half precision groups: half precision sums of so many
+// terms lose up to 11 dB against the CPU (block_size=64) for at most 5% speed.
 void rowPass(uint k, uint numGroups) {
     for (uint e = gl_LocalInvocationIndex; e < numGroups * k * HB * BLOCK; e += WG) {
         const uint m = e % BLOCK;
