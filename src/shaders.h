@@ -1262,12 +1262,12 @@ uint statElem(uint s) {
 #endif
 
 #if PINGPONG
-// Unnormalized DCT-II (forward) and DCT-III (inverse) matrix entries of blocks without a codelet, read from the table of cos(pi * q / (2 * BLOCK)), q in [0, 4
-// * BLOCK), that leads the cos table.
-float dctCoef(uint m, uint j, bool inverse) {
-    if (inverse)
-        return j == 0 ? 1.0 : 2.0 * cosTable.data[j * (m * 2 + 1) % (BLOCK * 4)];
-    return 2.0 * cosTable.data[(j * 2 + 1) * m % (BLOCK * 4)];
+// The matrix transforms of blocks and groups without a codelet sum the unnormalized DCT-II (forward) and DCT-III (inverse) entries halved, cos rather than 2
+// cos and 1/2 for the DC input of the inverse, and double the sums once. The entries come from tables of cos(pi * q / (2n)), q in [0, 4n), the table of blocks
+// leading the cos table, at indices (2j + 1) * m (forward) and j * (2m + 1) (inverse) stepped modulo 4n rather than divided.
+uint blockCosStep(uint q, uint step) {
+    q += step;
+    return q >= BLOCK * 4 ? q - BLOCK * 4 : q;
 }
 
 uint zTableOffset(uint n) {
@@ -1354,9 +1354,12 @@ void rowPass(uint k, uint numGroups) {
         const uint line = e / BLOCK;
         const uint base = line / (k * HB) * GRP_T + line % (k * HB) * BLOCK_P;
         vec2 sum = vec2(0.0);
-        for (uint j = 0; j < BLOCK; ++j)
-            sum += dctCoef(m, j, false) * vec2(G(base + j));
-        G(BUF_T + base + m) = T(sum);
+        uint q = m;
+        for (uint j = 0; j < BLOCK; ++j) {
+            sum += cosTable.data[q] * vec2(G(base + j));
+            q = blockCosStep(q, m * 2);
+        }
+        G(BUF_T + base + m) = T(sum * 2.0);
     }
 }
 
@@ -1366,17 +1369,30 @@ void colPass(uint k, uint numGroups, bool inverse, uint src, uint dst) {
         const uint q = e / BLOCK % HB;
         const uint block = e / (BLOCK * HB);
         const uint base = block / k * GRP_T + block % k * BLK_T + x;
+        // Table indices of output rows m (x) and m + 1 (y) for input rows 2j (even) and 2j + 1 (odd); a padding row m + 1 = BLOCK takes its step modulo 4 *
+        // BLOCK too, to stay within the table.
+        const uint m = q * 2;
+        uint evenX = inverse ? 0u : m;
+        uint evenY = inverse ? 0u : m + 1;
+        uint oddX = inverse ? m * 2 + 1 : m * 3;
+        uint oddY = inverse ? m * 2 + 3 : m * 3 + 3;
+        const uint stepX = inverse ? m * 4 + 2 : m * 4;
+        const uint stepY = (inverse ? m * 4 + 6 : m * 4 + 4) % (BLOCK * 4);
         vec2 sum = vec2(0.0);
         for (uint j = 0; j < HB; ++j) {
             const vec2 v = vec2(G(src + base + j * BLOCK_P));
-            sum.x += dctCoef(q * 2, j * 2, inverse) * v.x;
-            sum.y += q * 2 + 1 < BLOCK ? dctCoef(q * 2 + 1, j * 2, inverse) * v.x : 0.0;
+            sum.x += (inverse && j == 0 ? 0.5 : cosTable.data[evenX]) * v.x;
+            sum.y += m + 1 < BLOCK ? (inverse && j == 0 ? 0.5 : cosTable.data[evenY]) * v.x : 0.0;
             if (j * 2 + 1 < BLOCK) {
-                sum.x += dctCoef(q * 2, j * 2 + 1, inverse) * v.y;
-                sum.y += q * 2 + 1 < BLOCK ? dctCoef(q * 2 + 1, j * 2 + 1, inverse) * v.y : 0.0;
+                sum.x += cosTable.data[oddX] * v.y;
+                sum.y += m + 1 < BLOCK ? cosTable.data[oddY] * v.y : 0.0;
             }
+            evenX = blockCosStep(evenX, stepX);
+            evenY = blockCosStep(evenY, stepY);
+            oddX = blockCosStep(oddX, stepX);
+            oddY = blockCosStep(oddY, stepY);
         }
-        G(dst + base + q * BLOCK_P) = T(sum);
+        G(dst + base + q * BLOCK_P) = T(sum * 2.0);
     }
 }
 #endif
@@ -1385,8 +1401,7 @@ void colPass(uint k, uint numGroups, bool inverse, uint src, uint dst) {
 // The z-pass of groups larger than any codelet: forward into the second buffer, shrink there, inverse back.
 float zPassMatrix(uint k) {
     const uint table = zTableOffset(k);
-    // The terms take the coefficients of dctCoef halved, their table indices (2j + 1) * m and j * (2m + 1) modulo 4k stepped rather than divided, and the sums
-    // are doubled once.
+    // Halved entries at stepped indices, the sums doubled once (see blockCosStep).
     for (uint e = gl_LocalInvocationIndex; e < (WIENER + 1) * k * HB * BLOCK; e += WG) {
         const uint g = e / (k * HB * BLOCK);
         const uint m = e / (HB * BLOCK) % k;
@@ -1502,10 +1517,14 @@ void aggregate(uint k, float numWeight, float denWeight) {
         const uint z = e / (HB * BLOCK);
         const uint p = e / BLOCK % HB;
         const uint m = e % BLOCK;
-        vec2 sum = vec2(0.0);
-        for (uint j = 0; j < BLOCK; ++j)
-            sum += dctCoef(m, j, true) * vec2(G(BUF_T + z * BLK_T + p * BLOCK_P + j));
-        accumulatePair(z, p, m, sum * numWeight);
+        const uint row = BUF_T + z * BLK_T + p * BLOCK_P;
+        vec2 sum = vec2(G(row)) * 0.5;
+        uint q = 0;
+        for (uint j = 1; j < BLOCK; ++j) {
+            q = blockCosStep(q, m * 2 + 1);
+            sum += cosTable.data[q] * vec2(G(row + j));
+        }
+        accumulatePair(z, p, m, sum * 2.0 * numWeight);
     }
 #endif
 }
