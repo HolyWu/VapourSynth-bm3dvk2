@@ -648,6 +648,11 @@ int64_t batchRefs(const Plan& plan) {
     return int64_t{plan.batchRows} * plan.refCols;
 }
 
+// Filter tiles of the reference blocks in `rows` rows of a batch.
+int64_t batchTiles(const Plan& plan, int rows) {
+    return int64_t{divCeil(rows, plan.tileRefs)} * divCeil(plan.refCols, plan.tileRefs);
+}
+
 // A group member (MATCH_T in shaders.h): packed position, and window frame when filtering temporally.
 int64_t matchBytes(const Params& p) {
     return sizeof(uint32_t) * (p.radius > 0 ? 2 : 1);
@@ -896,8 +901,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const int64_t rowsBudget = std::min(matchBudget, gpu.maxStorageRange) / (int64_t{plan.refCols} * p.groupSize * matchBytes(p));
     const int64_t wholeRows = rowsBudget / plan.tileRefs * plan.tileRefs;
     plan.batchRows = static_cast<int>(std::min<int64_t>(wholeRows > 0 ? wholeRows : std::max<int64_t>(rowsBudget, 1), plan.refRows));
-    plan.filterGroupsX = static_cast<int>(std::min<int64_t>(int64_t{divCeil(plan.batchRows, plan.tileRefs)} * divCeil(plan.refCols, plan.tileRefs),
-                                                            gpu.maxGroupCountX));
+    plan.filterGroupsX = static_cast<int>(std::min<int64_t>(batchTiles(plan, plan.batchRows), gpu.maxGroupCountX));
     if (plan.globalGroup) {
         const int64_t budget = std::min(globalGroupBudget, gpu.maxStorageRange);
         plan.filterGroupsX = std::clamp(static_cast<int>(budget / (plan.groupBytes * plan.planes)), 1, plan.filterGroupsX);
@@ -1862,8 +1866,8 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
                               .cur = static_cast<uint32_t>(step.cur),
                               .refRow0 = static_cast<uint32_t>(row0),
                               .refRows = static_cast<uint32_t>(rows)};
-        const int tiles = divCeil(rows, plan_.tileRefs) * divCeil(plan_.refCols, plan_.tileRefs);
-        rec.dispatch(filter_, bindings, push, {std::min(plan_.filterGroupsX, tiles), static_cast<int>(plan_.activePlanes.size())});
+        const auto groups = static_cast<int>(std::min<int64_t>(plan_.filterGroupsX, batchTiles(plan_, rows)));
+        rec.dispatch(filter_, bindings, push, {groups, static_cast<int>(plan_.activePlanes.size())});
         rec.barrier();
     }
 }
