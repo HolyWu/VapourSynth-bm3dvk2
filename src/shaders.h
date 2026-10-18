@@ -366,7 +366,8 @@ uint centerRows(ivec2 pos, int ny) {
 // position of a full search, or already covered by an earlier window of a predictive search. A lane handles whole items of ROWS x NX candidates, loading each
 // window row once for every candidate it overlaps. At a clipped right edge, an item's columns past the window read up to (NX - 1) * STEP samples past the row
 // (the window buffers are padded for the last one), which only the rejected candidates there take. The threshold tests the sum before the clamp of the
-// correlation form, so that NaN sums of non-finite samples fail it rather than clamp to 0, as do -INF sums of finite samples whose products overflow.
+// correlation form, so that NaN sums of non-finite samples fail it rather than clamp to 0, as do -INF sums of finite samples whose products overflow. Kept
+// distances are capped at FLT_MAX, below the INF of rejected ones: a TH_SSE overflowing to INF keeps infinite distances, as the CPU implementation does.
 #define DEFINE_DISTANCES(NAME, ROWS, NX, STEP, COLS, PITCH, ITEMS, MAX_ROWS, ROW_MAJOR, FULL) \
 void NAME(uint base, uint count, uint offset, ivec2 refPos) { \
     for (uint item = base / ROWS + lane; item < ITEM_END(base, count, ROWS, (MAX_ROWS) * (PITCH), ITEMS); item += SG) { \
@@ -390,7 +391,7 @@ void NAME(uint base, uint count, uint offset, ivec2 refPos) { \
             [[unroll]] for (int x = 0; x < (NX); ++x) { \
                 const ivec2 p = pos + ivec2(x, k) * (STEP); \
                 const float sum = SSD_CORRELATION != 0 ? refEnergy + d[k][x] : d[k][x]; \
-                const float dist = SSD_CORRELATION != 0 ? max(sum, 0.0) : sum; \
+                const float dist = min(SSD_CORRELATION != 0 ? max(sum, 0.0) : sum, FLT_MAX); \
                 bool keep = inside && row0 + k < rows && (x == 0 || col + x < cols) && ((kept >> k) & 1u) != 0u && sum <= TH_SSE && !(FULL && p == refPos) && \
                             (SSD_CORRELATION == 0 || sum > -INF); \
                 for (uint e = 0; e < w && keep; ++e) \

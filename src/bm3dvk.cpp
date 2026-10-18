@@ -991,6 +991,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"MAX_CODELET", std::to_string(dct::maxCodeletSize)},
         {"COEF_TABLE", coef},
         {"FLT_EPSILON", floatBits(std::numeric_limits<float>::epsilon())},
+        {"FLT_MAX", floatBits(std::numeric_limits<float>::max())},
         {"DCT2_BLOCK", "dct2_" + std::to_string(p.blockSize)},
         {"DCT3_BLOCK", "dct3_" + std::to_string(p.blockSize)},
         {"FMA(a, b, c)", "fma(T(a), b, c)"},
