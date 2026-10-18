@@ -1724,7 +1724,7 @@ private:
     WorkBuffers createWorkBuffers(Make buffer) const;
     void recordConvert(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, const Sources& sources, int frame) const;
     void recordStep(const Recorder& rec, const WorkBuffers& work, const Step& step) const;
-    void recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const;
+    void recordNormalize(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, VSFrame* dst, int frame) const;
     void zeroAcc(const Recorder& rec, const WorkBuffers& work, int firstSlot, int slots) const;
     OutFramePtr newFrame(const VSFrame* propSrc, VSCore* core) const;
     bool canContinue(int n) const;
@@ -1870,7 +1870,8 @@ void Filter::recordStep(const Recorder& rec, const WorkBuffers& work, const Step
 }
 
 // Writes the estimate of `frame`, held in its accumulator slot, to dst; planes not filtered are taken from its window slot.
-void Filter::recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const {
+void Filter::recordNormalize(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, VSFrame* dst, int frame) const {
+    ctx.writes(dst, plan_.planes);
     const std::array bindings{bindBuffers(bindIn, work.acc, plan_.planes), bindBuffers(bindOut, framePlanes(gpu_, dst, plan_.planes), plan_.planes),
                               bindBuffers(bindSrcWindow, work.srcWindow, plan_.planes)};
     const NormalizePush push{.dstStride = elementStride(*vsapi_, dst), .frame = static_cast<uint32_t>(frame)};
@@ -1898,8 +1899,7 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
     recordConvert(rec, ctx, work, sources, n);
     rec.barrier();
     recordStep(rec, work, {});
-    ctx.writes(dst.get(), plan_.planes);
-    recordNormalize(rec, work, dst.get(), n);
+    recordNormalize(rec, ctx, work, dst.get(), n);
     ctx.submit();
     return dst;
 }
@@ -1961,8 +1961,7 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
             const int f = cursor.retiredUpTo;
             if (f == n || (pending_.contains(f) && !emitted_.contains(f))) {
                 OutFramePtr dst = newFrame(sources.src[f - sources.lo].get(), core);
-                ctx.writes(dst.get(), plan_.planes);
-                recordNormalize(rec, persistent_, dst.get(), f);
+                recordNormalize(rec, ctx, persistent_, dst.get(), f);
                 rec.barrier();
                 if (f == n)
                     result = std::move(dst);
