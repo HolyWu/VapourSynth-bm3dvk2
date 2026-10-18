@@ -1187,7 +1187,8 @@ std::vector<uint32_t> withFloatModes(std::span<const uint32_t> code, std::span<c
     return words;
 }
 
-// Bytes of the workgroup variables of a SPIR-V module, unpadded: the shared arrays a kernel declares, which makePlan mirrors by hand.
+// Bytes of the workgroup variables of a SPIR-V module, unpadded: the shared arrays a kernel declares, which makePlan mirrors by hand. Variables of other types
+// than numbers, vectors and constant-sized arrays of them fail.
 int64_t workgroupBytes(std::span<const uint32_t> code) {
     constexpr size_t headerWords = 5;
     constexpr uint32_t opTypeInt = 21;
@@ -1210,10 +1211,12 @@ int64_t workgroupBytes(std::span<const uint32_t> code) {
             sizes[w[1]] = w[2] / 8;
             break;
         case opTypeVector:
-            sizes[w[1]] = sizes[w[2]] * w[3];
+            if (sizes.contains(w[2]))
+                sizes[w[1]] = sizes[w[2]] * w[3];
             break;
         case opTypeArray:
-            sizes[w[1]] = sizes[w[2]] * constants[w[3]];
+            if (sizes.contains(w[2]) && constants.contains(w[3]))
+                sizes[w[1]] = sizes[w[2]] * constants[w[3]];
             break;
         case opTypePointer:
             pointees[w[1]] = w[3];
@@ -1222,8 +1225,12 @@ int64_t workgroupBytes(std::span<const uint32_t> code) {
             constants[w[2]] = w[3];
             break;
         case opVariable:
-            if (w[3] == storageWorkgroup)
-                bytes += sizes[pointees[w[1]]];
+            if (w[3] == storageWorkgroup) {
+                const auto size = sizes.find(pointees[w[1]]);
+                if (size == sizes.end())
+                    fail("a shared variable has a type that workgroupBytes cannot size");
+                bytes += size->second;
+            }
             break;
         default:
             break;
