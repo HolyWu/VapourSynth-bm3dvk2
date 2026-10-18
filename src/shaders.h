@@ -1277,8 +1277,15 @@ uint zTableOffset(uint n) {
 )glsl";
 
 inline constexpr std::string_view filterTail = R"glsl(
+// The odd stride of 8-byte elements leaves a padding column no pass reads. Gather and aggregate skip it where that saves a pass over a full group; elsewhere
+// their irregular rows cost more in bank conflicts than the skipped elements save (measured).
 void gather(uint k, float scale) {
+#if (GROUP * BLK_T + WG - 1) / WG > (GROUP * HB * HB * 2 + WG - 1) / WG
+    for (uint l = gl_LocalInvocationIndex; l < k * HB * HB * 2; l += WG) {
+        const uint i = l / (HB * 2) * BLOCK_P + l % (HB * 2);
+#else
     for (uint i = gl_LocalInvocationIndex; i < k * BLK_T; i += WG) {
+#endif
         const uint z = i / BLK_T;
         const uint p = i % BLK_T / BLOCK_P;
         const uint x = i % BLOCK_P;
@@ -1507,7 +1514,12 @@ void aggregate(uint k, float numWeight, float denWeight) {
 #if BLOCK <= MAX_CODELET
     rowPass(k, 1, true);
     SYNC();
+#if (GROUP * BLK_T + WG - 1) / WG > (GROUP * HB * BLOCK + WG - 1) / WG
+    for (uint l = gl_LocalInvocationIndex; l < k * HB * BLOCK; l += WG) {
+        const uint i = l / BLOCK * BLOCK_P + l % BLOCK;
+#else
     for (uint i = gl_LocalInvocationIndex; i < k * BLK_T; i += WG) {
+#endif
         const uint x = i % BLOCK_P;
         if (x < BLOCK)
             accumulatePair(i / BLK_T, i % BLK_T / BLOCK_P, x, vec2(G(swizzled(i / BLK_T, i))) * numWeight);
