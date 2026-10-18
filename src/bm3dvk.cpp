@@ -874,7 +874,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
 
     // Shared memory bounds the workgroups an SM runs, an SM granting each workgroup the device's limit per workgroup at most (measured): where few fit, larger
     // workgroups keep more warps busy.
-    const int64_t workgroupShared = groupShared + (plan.accTile ? int64_t{span} * span * sizeof(float) : 0);
+    const int64_t workgroupShared = groupShared + (plan.accTile ? tileShared : 0);
     const int64_t workgroupsPerSm = std::max<int64_t>(gpu.maxSharedMemory / workgroupShared, 1);
     while (plan.filterWorkgroup < std::min(filterWorkgroupLimit, gpu.maxWorkgroup) && workgroupsPerSm * plan.filterWorkgroup / sg < filterWarpsTarget)
         plan.filterWorkgroup *= 2;
@@ -888,7 +888,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         --plan.blockPadded;
         plan.groupBytes -= paddingBytes;
     }
-    plan.filterShared = (plan.globalGroup ? partialShared : plan.groupBytes + filterFixedShared) + (plan.accTile ? tileShared : 0);
+    plan.filterShared = workgroupShared - (plan.groupSwizzle ? paddingBytes : 0);
 
     // Matching and filtering run in batches of whole tile rows of reference blocks, bounded by the size of the matches, or of fewer rows where the bound leaves
     // no whole tile row.
