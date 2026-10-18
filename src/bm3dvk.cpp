@@ -1955,11 +1955,11 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
                                           .activeLo = std::max(firstFrame, cursor.retiredUpTo)});
         }
 
-        // A frame no request waits for is only cleared from the ring. Once the last reference frame is in, the frames past n stay complete in the ring for
-        // their own requests.
+        // A frame no request waits for, or one already emitted ahead for its requests, is only cleared from the ring. Once the last reference frame is in, the
+        // frames past n stay complete in the ring for their own requests.
         for (const int retireHi = m >= last ? n : m - radius; cursor.retiredUpTo <= retireHi; ++cursor.retiredUpTo) {
             const int f = cursor.retiredUpTo;
-            if (f == n || pending_.contains(f)) {
+            if (f == n || (pending_.contains(f) && !emitted_.contains(f))) {
                 OutFramePtr dst = newFrame(sources.src[f - sources.lo].get(), core);
                 ctx.writes(dst.get(), plan_.planes);
                 recordNormalize(rec, persistent_, dst.get(), f);
@@ -1978,11 +1978,8 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
     ctx.submit();
     cursor_ = cursor;
 
-    // Nothing may throw past the submission, whose ring slots are cleared: merging moves the nodes allocated above, and a frame emitted again replaces the
-    // earlier one.
+    // Nothing may throw past the submission, whose ring slots are cleared: merging moves the nodes allocated above, for frames emitted_ does not hold yet.
     emitted_.merge(ahead);
-    for (auto& [f, frame] : ahead)
-        emitted_.find(f)->second = std::move(frame);
     endRequest(n);
     return result;
 }
