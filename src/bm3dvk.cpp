@@ -203,7 +203,6 @@ struct Gpu {
     bool nvidiaDriver{};
     bool fp16Math{};
     std::vector<uint32_t> fp16DenormPreserve; // widths of the DenormPreserve modes kernels of half precision input declare
-    bool infNanPreserve{};
     bool floatAtomics{};
     uint32_t subgroupSize{};
     int maxWorkgroup{};
@@ -269,7 +268,6 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     }
     gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && props12.shaderDenormPreserveFloat16 == VK_TRUE &&
                    (gpu.nvidiaDriver || !gpu.fp16DenormPreserve.empty());
-    gpu.infNanPreserve = props12.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
     gpu.subgroupSize = std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize);
     // Single lane subgroups would share the elements the filter keeps their Wiener sums in (see statElem in shaders.h).
@@ -1158,8 +1156,6 @@ struct KernelSpec {
 // The words of a SPIR-V module with `modes` added (and their capabilities): glslang keeps a single spirv_execution_mode of a mode, where a driver tying the
 // 16-bit denorm mode to other widths needs one for each.
 std::vector<uint32_t> withFloatModes(std::span<const uint32_t> code, std::span<const FloatMode> modes) {
-    if (modes.empty())
-        return {code.begin(), code.end()};
     constexpr size_t headerWords = 5;
     constexpr uint32_t opEntryPoint = 15;
     constexpr uint32_t opExecutionMode = 16;
@@ -1607,9 +1603,7 @@ public:
         // INF marks rejected candidates and NaN distances must fail the threshold, but without SignedZeroInfNanPreserve for 32-bit floats a driver may assume
         // neither occurs (AMDVLK marks float operations nnan). Half precision input keeps its subnormal samples through the loads and stores even where the
         // math is single precision.
-        std::vector<FloatMode> modes;
-        if (gpu_.infNanPreserve)
-            modes.push_back({modeSignedZeroInfNanPreserve, capabilitySignedZeroInfNanPreserve, 32});
+        std::vector<FloatMode> modes{{modeSignedZeroInfNanPreserve, capabilitySignedZeroInfNanPreserve, 32}};
         if (plan_.fp16Input)
             for (const uint32_t width : gpu_.fp16DenormPreserve)
                 modes.push_back({modeDenormPreserve, capabilityDenormPreserve, width});
