@@ -29,6 +29,7 @@ inline constexpr std::string_view common = R"glsl(
 uint packPos(ivec2 p) { return (uint(p.y) << 16) | uint(p.x); }
 ivec2 unpackPos(uint p) { return ivec2(p & 0xFFFFu, p >> 16); }
 uint slotOf(uint frame) { return frame % SLOTS; }
+uint winIndex(uint frame, ivec2 p) { return slotOf(frame) * PLANE_SIZE + uint(p.y) * WIDTH + uint(p.x); }
 uint accNum(uint frame, ivec2 p) { return slotOf(frame) * ACC_SLOT + uint(p.y) * WIDTH + uint(p.x); }
 uint accDen(uint frame, ivec2 p) { return accNum(frame, p) + PLANE_SIZE; }
 ivec2 refPosition(uint row, uint col) { return min(ivec2(col, row) * BLOCK_STEP, ivec2(WIDTH, HEIGHT) - BLOCK); }
@@ -53,7 +54,7 @@ void main() {
         return;
 
     const uint s = p.y * pc.srcStride + p.x;
-    const uint d = slotOf(pc.frame) * PLANE_SIZE + p.y * WIDTH + p.x;
+    const uint d = winIndex(pc.frame, ivec2(p));
 #if PLANES == 3
     const float r = float(src[0].data[s]);
     const float g = float(src[1].data[s]);
@@ -99,7 +100,7 @@ float accValue(uint plane, uint i) {
 
 float estimate(uint plane, ivec2 p) {
     if ((uint(ACTIVE_MASK) >> plane & 1u) == 0u)
-        return p.x < WIDTH && p.y < HEIGHT ? float(srcWin[plane].data[slotOf(pc.frame) * PLANE_SIZE + uint(p.y) * WIDTH + uint(p.x)]) : 0.0;
+        return p.x < WIDTH && p.y < HEIGHT ? float(srcWin[plane].data[winIndex(pc.frame, p)]) : 0.0;
     const ivec2 origin = ivec2(gl_WorkGroupID.xy) * IMAGE_TILE - (BLOCK - 1);
     for (uint i = gl_LocalInvocationIndex; i < SPAN * SPAN; i += IMAGE_TILE * IMAGE_TILE) {
         const ivec2 q = origin + ivec2(i % SPAN, i / SPAN);
@@ -985,7 +986,7 @@ void main() {
             counts.counts[slot] = 1;
 #else
         const uint curOffset = frameOffset(pc.cur);
-        const uint refOffset = curOffset + uint(refPos.y) * WIDTH + uint(refPos.x);
+        const uint refOffset = winIndex(pc.firstFrame + pc.cur, refPos);
 #if SSD_CORRELATION
         float sum = 0.0;
         for (uint i = lane; i < BLOCK * BLOCK; i += SG)
@@ -1291,7 +1292,7 @@ void gather(uint k, float scale) {
         const uint x = i % BLOCK_P;
         const uvec2 m = member(z);
         const ivec2 pos = unpackPos(m.x);
-        const uint offset = slotOf(pc.firstFrame + m.y) * PLANE_SIZE + (uint(pos.y) + p * 2) * WIDTH + uint(pos.x) + x;
+        const uint offset = winIndex(pc.firstFrame + m.y, pos + ivec2(x, p * 2));
         const bool inside = x < BLOCK;
         const bool second = p * 2 + 1 < BLOCK;
         const uint e = swizzled(z, i);
