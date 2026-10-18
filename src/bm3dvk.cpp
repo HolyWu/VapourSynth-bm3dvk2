@@ -1916,10 +1916,11 @@ bool Filter::canContinue(int n) const {
 
 // Restarts the ring so that frame n is the first complete one; only frame 0 needs no reference frames before it.
 TemporalCursor Filter::restart(const Recorder& rec, int n) const {
-    const int first = std::max(n - params_.radius, 0);
+    const int first = frameSpan(n, params_.radius).first;
     const int firstComplete = first == 0 ? 0 : first + params_.radius;
     zeroAcc(rec, persistent_, 0, plan_.slots);
-    return {.valid = true, .nextRef = first, .retiredUpTo = firstComplete, .convertedUpTo = std::max(first - params_.radius, 0)};
+    // The first step reads window frames from frameSpan(first, radius) on.
+    return {.valid = true, .nextRef = first, .retiredUpTo = firstComplete, .convertedUpTo = frameSpan(first, params_.radius).first};
 }
 
 FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
