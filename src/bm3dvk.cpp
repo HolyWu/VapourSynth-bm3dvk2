@@ -1314,8 +1314,8 @@ struct Groups {
     int y{1};
 };
 
-// GPU time of every dispatch from timestamp queries, for profiling: enabled by the environment variable BM3DVK_PROFILE set to anything but empty or 0, and
-// logged when the filter is freed. Dispatches past the capacity go untimed.
+// GPU time of every dispatch and fill from timestamp queries, for profiling: enabled by the environment variable BM3DVK_PROFILE set to anything but empty or 0,
+// and logged when the filter is freed. Commands past the capacity go untimed.
 class KernelTimer {
 public:
     explicit KernelTimer(const Gpu& gpu) : vk_{gpu.vk}, device_{gpu.handles.device}, period_{gpu.timestampPeriod}, names_(capacity / 2) {
@@ -1446,8 +1446,12 @@ public:
         vk_->vkCmdPipelineBarrier2(cmd_, &dependency);
     }
 
+    // Timed too: a dispatch's first timestamp waits for every earlier command, so a fill running beside it would otherwise drop out of the profile.
     void zero(VkBuffer buffer, int64_t offset, int64_t size) const {
+        const std::optional<uint32_t> timed = timer_ ? timer_->begin(cmd_, "BM3D zero") : std::nullopt;
         vk_->vkCmdFillBuffer(cmd_, buffer, static_cast<VkDeviceSize>(offset), static_cast<VkDeviceSize>(size), 0);
+        if (timed)
+            timer_->end(cmd_, *timed);
     }
 
 private:
