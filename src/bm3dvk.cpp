@@ -257,17 +257,15 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     // DenormPreserve for 16-bit floats, and for the widths the driver ties to them: 64-bit (AMD) or all (Mali on panvk). A device that cannot preserve them
     // filters in single precision. NVIDIA keeps them without the mode, its default is as close to the CPU implementation, and the mode costs its filter about
     // 3% (RTX 4060 Ti, RGBH final vn).
-    if (!gpu.nvidiaDriver && props12.shaderDenormPreserveFloat16 == VK_TRUE) {
-        if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL)
-            gpu.fp16DenormPreserve = {16};
-        else if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY && props12.shaderDenormPreserveFloat64 == VK_TRUE)
-            gpu.fp16DenormPreserve = {16, 64};
-        else if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE && props12.shaderDenormPreserveFloat32 == VK_TRUE &&
-                 props12.shaderDenormPreserveFloat64 == VK_TRUE)
-            gpu.fp16DenormPreserve = {16, 32, 64};
-    }
-    gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && props12.shaderDenormPreserveFloat16 == VK_TRUE &&
-                   (gpu.nvidiaDriver || !gpu.fp16DenormPreserve.empty());
+    std::vector<std::pair<uint32_t, VkBool32>> tied{{16, props12.shaderDenormPreserveFloat16}};
+    if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE)
+        tied.push_back({32, props12.shaderDenormPreserveFloat32});
+    if (props12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL)
+        tied.push_back({64, props12.shaderDenormPreserveFloat64});
+    if (!gpu.nvidiaDriver && std::ranges::all_of(tied, [](const auto& t) { return t.second == VK_TRUE; }))
+        for (const auto& t : tied)
+            gpu.fp16DenormPreserve.push_back(t.first);
+    gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && (gpu.nvidiaDriver ? props12.shaderDenormPreserveFloat16 == VK_TRUE : !gpu.fp16DenormPreserve.empty());
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
     gpu.subgroupSize = std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize);
     // Single lane subgroups would share the elements the filter keeps their Wiener sums in (see statElem in shaders.h).
