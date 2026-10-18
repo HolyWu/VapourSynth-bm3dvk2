@@ -710,7 +710,7 @@ std::pair<int, int> itemShape(int cols, int rows, int windows, int step, int blo
 Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const bool fp16Input = vi.format.bitsPerSample == 16;
     Plan plan{.width = vi.width, .height = vi.height, .planes = vi.format.numPlanes, .fp16Input = fp16Input, .fp16Math = gpu.fp16Math && fp16Input,
-              .slots = p.radius * 2 + 1};
+              .slots = std::min(p.radius * 2 + 1, vi.numFrames)};
     // Single precision groups run the codelet z-pass on single lines (Z_SCALAR in shaders.h), which halves the registers a line pair takes.
     plan.zScalar = !plan.fp16Math;
 
