@@ -1538,15 +1538,6 @@ uint32_t elementStride(const VSAPI& vsapi, const VSFrame* frame) {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Filter
 
-std::array<BindingLayout, 2> imageLayout(int planes) {
-    return {{{bindIn, static_cast<uint32_t>(planes)}, {bindOut, static_cast<uint32_t>(planes)}}};
-}
-
-std::array<BindingLayout, 3> normalizeLayout(int planes) {
-    const auto count = static_cast<uint32_t>(planes);
-    return {{{bindIn, count}, {bindOut, count}, {bindSrcWindow, count}}};
-}
-
 constexpr std::array<BindingLayout, 3> blockMatchLayout{{{bindWindow, 1}, {bindMatches, 1}, {bindCounts, 1}}};
 
 // Working buffers of one window of converted frames, one accumulation of estimates and one batch of matches.
@@ -1621,15 +1612,17 @@ public:
                 modes.push_back({modeDenormPreserve, capabilityDenormPreserve, width});
         const std::string preamble = buildPreamble(params_, plan_, gpu_);
         const auto kernelSource = [&preamble](std::string_view kernel) { return preamble + std::string{shader::common} + std::string{kernel}; };
-        convert_ = createKernel(gpu_, core, {"BM3D convert", kernelSource(shader::convert), imageLayout(plan_.planes), sizeof(ConvertPush), false, modes, 0});
+        const auto planes = static_cast<uint32_t>(plan_.planes);
+        const std::array<BindingLayout, 3> imageLayout{{{bindIn, planes}, {bindOut, planes}, {bindSrcWindow, planes}}};
+        convert_ = createKernel(
+            gpu_, core, {"BM3D convert", kernelSource(shader::convert), std::span{imageLayout}.first(2), sizeof(ConvertPush), false, modes, 0});
         blockMatch_ = createKernel(
             gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true, modes, plan_.bmShared});
         filter_ = createKernel(gpu_, core,
                                {"BM3D filter", filterSource(params_, preamble, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true, modes,
                                 plan_.filterShared});
         normalize_ = createKernel(gpu_, core,
-                                  {"BM3D normalize", kernelSource(shader::normalize), normalizeLayout(plan_.planes), sizeof(NormalizePush), false, modes,
-                                   plan_.normalizeShared});
+                                  {"BM3D normalize", kernelSource(shader::normalize), imageLayout, sizeof(NormalizePush), false, modes, plan_.normalizeShared});
         if (plan_.pingpong)
             uploadCosTable(core);
     }
