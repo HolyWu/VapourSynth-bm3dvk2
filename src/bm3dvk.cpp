@@ -715,8 +715,6 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
 
     plan.refCols = divCeil(vi.width - p.blockSize, p.blockStep) + 1;
     plan.refRows = divCeil(vi.height - p.blockSize, p.blockStep) + 1;
-    if (!std::in_range<int>(int64_t{plan.refCols} * plan.refRows))
-        fail("too many reference blocks, increase \"block_step\"");
 
     // Mirrors the shared arrays of the normalize kernel.
     const int64_t normalizeSpan = imageTile + p.blockSize - 1;
