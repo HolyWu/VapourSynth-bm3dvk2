@@ -824,6 +824,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.bmCorrelation = p.blockSize > bmRefInRegsMax && plan.thSSE >= 2.0 * std::numeric_limits<float>::epsilon() * blockArea * (blockArea + p.blockSize);
     plan.bmSubgroups = std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);
     plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
+    // A search in several chunks takes the general merge.
+    plan.bmSlotKeys = plan.bmSlotKeys && plan.bmSingleChunk;
     if (plan.bmSingleChunk) {
         std::tie(plan.bmFullRows, plan.bmFullCols) =
             itemShape(plan.fullCols, plan.fullRows, 1, p.bmStep, p.blockSize, sg, bmFullLoadCost, plan.bmCorrelation, bmItemRowsMax, bmItemColsMax);
@@ -969,7 +971,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"FULL_COLS", std::to_string(plan.fullCols)},
         {"FULL_ROWS", std::to_string(plan.fullRows)},
         {"FULL_PITCH", std::to_string(plan.fullPitch)},
-        {"SLOT_KEYS", plan.bmSlotKeys && plan.bmSingleChunk ? "1" : "0"},
+        {"SLOT_KEYS", plan.bmSlotKeys ? "1" : "0"},
         {"PS_COLS", std::to_string(plan.psCols)},
         {"PS_ROWS", std::to_string(plan.psRows)},
         {"PS_UNION", plan.psUnion ? "1" : "0"},
