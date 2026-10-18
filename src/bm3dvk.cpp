@@ -1723,6 +1723,7 @@ private:
     void recordConvert(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, const Sources& sources, int frame) const;
     void recordStep(const Recorder& rec, const WorkBuffers& work, const Step& step) const;
     void recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFrame* dst, int frame) const;
+    void zeroAcc(const Recorder& rec, const WorkBuffers& work, int firstSlot, int slots) const;
     OutFramePtr newFrame(const VSFrame* propSrc, VSCore* core) const;
     bool canContinue(int n) const;
     TemporalCursor restart(const Recorder& rec, int n) const;
@@ -1875,6 +1876,12 @@ void Filter::recordNormalize(const Recorder& rec, const WorkBuffers& work, VSFra
     rec.dispatch(normalize_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
 }
 
+// Clears accumulator slots [firstSlot, firstSlot + slots) of the filtered planes.
+void Filter::zeroAcc(const Recorder& rec, const WorkBuffers& work, int firstSlot, int slots) const {
+    for (const int plane : plan_.activePlanes)
+        rec.zero(work.acc[plane], accSlotBytes(plan_) * firstSlot, accSlotBytes(plan_) * slots);
+}
+
 OutFramePtr Filter::newFrame(const VSFrame* propSrc, VSCore* core) const {
     return OutFramePtr{gpu_.vkapi->newGPUVideoFrame(&vi_.format, vi_.width, vi_.height, propSrc, core), {vsapi_}};
 }
@@ -1886,8 +1893,7 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
     const WorkBuffers work = createWorkBuffers([&](int64_t bytes) { return ctx.retain(createBuffer(gpu_, core, bytes)); });
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
-    for (const int plane : plan_.activePlanes)
-        rec.zero(work.acc[plane], 0, accSlotBytes(plan_));
+    zeroAcc(rec, work, 0, 1);
     recordConvert(rec, ctx, work, sources, n);
     rec.barrier();
     recordStep(rec, work, {});
@@ -1905,8 +1911,7 @@ bool Filter::canContinue(int n) const {
 TemporalCursor Filter::restart(const Recorder& rec, int n) const {
     const int first = std::max(n - params_.radius, 0);
     const int firstComplete = first == 0 ? 0 : first + params_.radius;
-    for (const int plane : plan_.activePlanes)
-        rec.zero(persistent_.acc[plane], 0, accSlotBytes(plan_) * plan_.slots);
+    zeroAcc(rec, persistent_, 0, plan_.slots);
     return {.valid = true, .nextRef = first, .retiredUpTo = firstComplete, .convertedUpTo = std::max(first - params_.radius, 0)};
 }
 
@@ -1963,8 +1968,7 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
                 else
                     ahead.emplace(f, std::move(dst));
             }
-            for (const int plane : plan_.activePlanes)
-                rec.zero(persistent_.acc[plane], accSlotBytes(plan_) * (f % plan_.slots), accSlotBytes(plan_));
+            zeroAcc(rec, persistent_, f % plan_.slots, 1);
             rec.barrier();
         }
     }
