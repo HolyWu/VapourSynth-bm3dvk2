@@ -298,8 +298,7 @@ GpuBuffer createBuffer(const Gpu& gpu, VSCore* core, int64_t size) {
     std::array<char, errorSize> err{};
     VSVulkanBufferInfo info{};
     BufferPtr owner{gpu.vkapi->createGPUBuffer(core, static_cast<VkDeviceSize>(size), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, &info, err.data(), errorSize),
-                    {gpu.vkapi}};
+                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, &info, err.data(), errorSize), {gpu.vkapi}};
     if (!owner)
         fail(err.data());
     return {std::move(owner), info.buffer};
@@ -854,8 +853,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // once into distinct banks, while 4-byte elements fare better with rows aligned for 16-byte loads (measured).
     const int halfBlock = (p.blockSize + 1) / 2;
     plan.filterWorkgroup = std::min(std::clamp(static_cast<int>(std::bit_ceil(static_cast<unsigned>(p.groupSize * halfBlock))),
-                                               std::max(filterWorkgroupMin, sg), std::max(filterWorkgroupMax, sg)),
-                                    gpu.maxWorkgroup);
+                                               std::max(filterWorkgroupMin, sg), std::max(filterWorkgroupMax, sg)), gpu.maxWorkgroup);
     plan.pingpong = p.blockSize > dct::maxCodeletSize || p.groupSize > dct::maxCodeletSize;
     const int elementBytes = plan.fp16Math ? 4 : 8;
     plan.blockPadded = 2 * halfBlock + (elementBytes == 8 ? 1 : 0);
@@ -1783,8 +1781,7 @@ void Filter::uploadCosTable(VSCore* core) {
     VSVulkanBufferInfo stagingInfo{};
     BufferPtr staging{gpu_.vkapi->createGPUBuffer(core, static_cast<VkDeviceSize>(bytes), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0, &stagingInfo,
-                                                  err.data(), errorSize),
-                      {gpu_.vkapi}};
+                                                  err.data(), errorSize), {gpu_.vkapi}};
     if (!staging)
         fail(err.data());
     std::ranges::copy(values, std::span{static_cast<float*>(stagingInfo.mapped), values.size()}.begin());
@@ -1954,9 +1951,8 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
             rec.barrier();
 
             // Frames below retiredUpTo are retired, or after a restart lack earlier reference frames.
-            recordStep(rec, persistent_,
-                       {.firstFrame = firstFrame, .numFrames = lastFrame - firstFrame + 1, .cur = m - firstFrame,
-                        .activeLo = std::max(firstFrame, cursor.retiredUpTo)});
+            recordStep(rec, persistent_, {.firstFrame = firstFrame, .numFrames = lastFrame - firstFrame + 1, .cur = m - firstFrame,
+                                          .activeLo = std::max(firstFrame, cursor.retiredUpTo)});
         }
 
         // A frame no request waits for is only cleared from the ring. Once the last reference frame is in, the frames past n stay complete in the ring for
