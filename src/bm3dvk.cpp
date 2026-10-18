@@ -1602,7 +1602,7 @@ public:
         : vsapi_{&vsapi}, node_{std::move(node)}, refNode_{std::move(refNode)}, vi_{*vsapi.getVideoInfo(node_.get())}, params_{params}, gpu_{gpu},
           plan_{makePlan(params_, vi_, gpu_)}, timer_{profilingRequested() ? std::make_unique<KernelTimer>(gpu_) : nullptr}, pool_{createPool(core)} {
         // Working buffers come before the kernels, so that sizes past the device's limits fail without compiling them.
-        if (params_.radius > 0)
+        if (temporal())
             persistent_ = createWorkBuffers([&](int64_t bytes) { return persistentBuffers_.emplace_back(createBuffer(gpu_, core, bytes)).buffer; });
         else // Spatial filters create their working buffers per frame, so only their sizes are checked here.
             createWorkBuffers([this](int64_t bytes) {
@@ -1632,9 +1632,9 @@ public:
     }
 
     std::vector<VSFilterDependency> dependencies() const {
-        std::vector<VSFilterDependency> deps{{node_.get(), params_.radius > 0 ? rpGeneral : rpStrictSpatial}};
+        std::vector<VSFilterDependency> deps{{node_.get(), temporal() ? rpGeneral : rpStrictSpatial}};
         if (refNode_)
-            deps.push_back({refNode_.get(), params_.radius > 0 ? rpGeneral : rpStrictSpatial});
+            deps.push_back({refNode_.get(), temporal() ? rpGeneral : rpStrictSpatial});
         return deps;
     }
 
