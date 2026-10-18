@@ -87,6 +87,7 @@ constexpr double filterTileGain = 10.0;   // least ratio of estimates accumulate
 constexpr int64_t filterTileWorkgroups = 3; // least workgroups per SM a tile may leave where more would run without it
 constexpr int64_t filterTileWorkgroupsBasic = 2; // the same for basic estimates, without a reference group (measured)
 constexpr uint32_t preferredSubgroupSize = 32;
+constexpr uint32_t appleVendorId = 0x106B;
 constexpr int64_t globalGroupBudget = int64_t{128} << 20;
 constexpr int64_t matchBudget = int64_t{256} << 20;
 constexpr uint32_t maxBindings = 7;
@@ -201,9 +202,11 @@ struct Gpu {
     const VSVulkanFunctions* vk{};
     VSVulkanCoreHandles handles{};
     bool nvidiaDriver{};
+    bool llvmpipeDriver{};
     bool fp16Math{};
     std::vector<uint32_t> fp16DenormPreserve; // widths of the DenormPreserve modes kernels of half precision input declare
     bool floatAtomics{};
+    bool pinSubgroup{};
     uint32_t subgroupSize{};
     int maxWorkgroup{};
     int64_t maxSharedMemory{};
@@ -245,7 +248,10 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     VkPhysicalDeviceFeatures2 features{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &features12};
     gpu.vk->vkGetPhysicalDeviceFeatures2(gpu.handles.physicalDevice, &features);
 
-    if ((props13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) == 0)
+    // Unless pinned, kernels built for SPIR-V 1.6 run at any subgroup size from the minimum to the maximum. Apple GPUs, which MoltenVK cannot pin, run compute
+    // shaders in SIMD groups of the maximum it reports, 32 lanes.
+    gpu.pinSubgroup = (props13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+    if (!gpu.pinSubgroup && props13.minSubgroupSize != props13.maxSubgroupSize && props.properties.vendorID != appleVendorId)
         fail("the device cannot pin the subgroup size of compute shaders");
     constexpr VkSubgroupFeatureFlags subgroupOps = VK_SUBGROUP_FEATURE_ARITHMETIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT;
     if ((props11.subgroupSupportedOperations & subgroupOps) != subgroupOps)
@@ -253,6 +259,7 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
 
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
     gpu.nvidiaDriver = props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+    gpu.llvmpipeDriver = props12.driverID == VK_DRIVER_ID_MESA_LLVMPIPE;
     // Half precision groups are prescaled far down (see filterGroup), which takes dark and near-neutral samples into the subnormal range: kernels keep them by
     // DenormPreserve for 16-bit floats, and for the widths the driver ties to them: 64-bit (AMD) or all (Mali on panvk). A device that cannot preserve them
     // filters in single precision. NVIDIA keeps them without the mode, its default is as close to the CPU implementation, and the mode costs its filter about
@@ -267,7 +274,7 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
             gpu.fp16DenormPreserve.push_back(t.first);
     gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && (gpu.nvidiaDriver ? props12.shaderDenormPreserveFloat16 == VK_TRUE : !gpu.fp16DenormPreserve.empty());
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
-    gpu.subgroupSize = std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize);
+    gpu.subgroupSize = gpu.pinSubgroup ? std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize) : props13.maxSubgroupSize;
     // Single lane subgroups would share the elements the filter keeps their Wiener sums in (see statElem in shaders.h).
     if (gpu.subgroupSize < 2)
         fail("the device's subgroups are too small");
@@ -825,7 +832,9 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // 1], rather than 0: smaller thresholds keep plain differences, which match duplicates as the CPU implementation does.
     const auto blockArea = static_cast<double>(p.blockSize) * p.blockSize;
     plan.bmCorrelation = p.blockSize > bmRefInRegsMax && plan.thSSE >= 2.0 * std::numeric_limits<float>::epsilon() * blockArea * (blockArea + p.blockSize);
-    plan.bmSubgroups = std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);
+    // llvmpipe runs the subgroups of a workgroup as coroutines that every barrier suspends, subgroup ones too, and ends the workgroup once one of them returns:
+    // a subgroup whose search takes more subgroup barriers than another one's would stop halfway.
+    plan.bmSubgroups = gpu.llvmpipeDriver ? 1 : std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);
     plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
     // A search in several chunks takes the general merge.
     plan.bmSlotKeys = plan.bmSlotKeys && plan.bmSingleChunk;
@@ -1292,7 +1301,7 @@ Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
     const VkComputePipelineCreateInfo pipelineInfo{
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                  .pNext = spec.pinSubgroup ? static_cast<const void*>(&subgroupInfo) : &moduleInfo,
+                  .pNext = spec.pinSubgroup && gpu.pinSubgroup ? static_cast<const void*>(&subgroupInfo) : &moduleInfo,
                   .flags = spec.pinSubgroup ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : VkPipelineShaderStageCreateFlags{},
                   .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                   .pName = "main"},
