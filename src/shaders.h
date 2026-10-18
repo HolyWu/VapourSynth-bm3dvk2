@@ -1099,11 +1099,11 @@ layout(push_constant) uniform Push {
 #define BUF_T (GRP_T * (WIENER + 1))
 #define NUM_SG (WG / SG)
 
-// Index of element i of block z, i counted in the unpermuted layout. Unpadded blocks of four row pairs of 8-byte elements (GROUP_SWIZZLE 2) stay free of bank
+// Index of element i of block z, i counted in the unpermuted layout. Unpadded blocks of four row pairs of 8-byte elements (GROUP_SWIZZLE) stay free of bank
 // conflicts by a permutation instead: block z swaps its row pairs by z & 1 and XORs the column with z & 1, the high bit of the row pair and z >> 1 & 1. Blocks
 // start at multiples of 32 elements there.
 uint swizzled(uint z, uint i) {
-#if GROUP_SWIZZLE == 2
+#if GROUP_SWIZZLE
     return i ^ ((z & 1u) * 12u | (i >> 3 & 2u) | (z >> 1 & 1u));
 #else
     return i;

@@ -591,7 +591,7 @@ struct Plan {
     bool zScalar{};
     int slots{};
     int blockPadded{};
-    int groupSwizzle{};
+    bool groupSwizzle{};
     int refCols{};
     int refRows{};
     int batchRows{};
@@ -888,7 +888,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const int64_t paddingBytes = plan.groupBytes / plan.blockPadded;
     if (elementBytes == 8 && halfBlock == 4 && !plan.pingpong && !plan.globalGroup &&
         gpu.maxSharedMemory / (workgroupShared - paddingBytes) > workgroupsPerSm) {
-        plan.groupSwizzle = 2;
+        plan.groupSwizzle = true;
         --plan.blockPadded;
         plan.groupBytes -= paddingBytes;
     }
@@ -948,7 +948,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"RADIUS", std::to_string(p.radius)},
         {"BLOCK", std::to_string(p.blockSize)},
         {"BLOCK_P", std::to_string(plan.blockPadded)},
-        {"GROUP_SWIZZLE", std::to_string(plan.groupSwizzle)},
+        {"GROUP_SWIZZLE", plan.groupSwizzle ? "1" : "0"},
         {"BLOCK_STEP", std::to_string(p.blockStep)},
         {"GROUP", std::to_string(p.groupSize)},
         {"BM_RANGE", std::to_string(p.bmRange)},
