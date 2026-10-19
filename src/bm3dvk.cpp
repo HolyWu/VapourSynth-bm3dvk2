@@ -78,6 +78,7 @@ constexpr int bmSpatialLaneSpacing = 10;
 constexpr double bmFullLoadCost = 2.0;
 constexpr double bmPredictiveLoadCost = 4.0;
 constexpr int bmRefInRegsMax = 8; // largest block size whose reference block the blockMatch kernel holds in registers
+constexpr int bmCorrelationMinBlock = 9; // smallest block size whose distances take the correlation form (measured with a shared memory reference)
 constexpr int filterWorkgroupMin = 64;
 constexpr int filterWorkgroupMax = 256;
 constexpr int filterWorkgroupLimit = 512; // largest workgroup the filter grows to for filterWarpsTarget
@@ -820,12 +821,13 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         return perSubgroup * subgroups + (plan.bmRefInRegs ? 1 : 2) * 12;
     };
     plan.psRowMajor = laneSpacing(plan.psCols) > 2;
-    // Distances in correlation form take the reference block offset by its mean, which pays off for blocks larger than bmRefInRegsMax, always read from shared
+    // Distances in correlation form take the reference block offset by its mean, which pays off for blocks from bmCorrelationMinBlock on, read from shared
     // memory. Smaller blocks keep plain differences wherever their reference lives: one in registers, which the compiler reads again from the window instead,
     // loses with it (measured). The distance of a duplicate block is then a rounding residual, of up to 2 * FLT_EPSILON * n * (n + BLOCK) for n samples in [0,
     // 1], rather than 0: smaller thresholds keep plain differences, which match duplicates as the CPU implementation does.
     const auto blockArea = static_cast<double>(p.blockSize) * p.blockSize;
-    plan.bmCorrelation = p.blockSize > bmRefInRegsMax && plan.thSSE >= 2.0 * std::numeric_limits<float>::epsilon() * blockArea * (blockArea + p.blockSize);
+    plan.bmCorrelation =
+        p.blockSize >= bmCorrelationMinBlock && plan.thSSE >= 2.0 * std::numeric_limits<float>::epsilon() * blockArea * (blockArea + p.blockSize);
     // llvmpipe runs the subgroups of a workgroup as coroutines that every barrier suspends, subgroup ones too, and ends the workgroup once one of them returns:
     // a subgroup whose search takes more subgroup barriers than another one's would stop halfway.
     plan.bmSubgroups = gpu.llvmpipeDriver ? 1 : std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);
