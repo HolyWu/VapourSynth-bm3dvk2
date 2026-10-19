@@ -21,6 +21,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <bit>
 #include <cctype>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -1477,33 +1478,25 @@ public:
 
     template <PushConstants Push>
     void dispatch(const Kernel& kernel, std::span<const DescriptorWrite> bindings, const Push& push, Groups groups) const {
-        // Labels name the kernels in GPU captures; the entry points exist only alongside debug utils.
-        if (vk_->vkCmdBeginDebugUtilsLabelEXT) {
-            const VkDebugUtilsLabelEXT label{.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT, .pLabelName = kernel.name};
-            vk_->vkCmdBeginDebugUtilsLabelEXT(cmd_, &label);
-        }
-        const std::optional<uint32_t> timed = timer_ ? timer_->begin(cmd_, kernel.name) : std::nullopt;
-        vk_->vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, kernel.pipeline.get());
-        std::array<VkWriteDescriptorSet, maxBindings> writes{};
-        for (size_t i = 0; i < bindings.size(); ++i)
-            writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                         .dstBinding = bindings[i].binding,
-                         .descriptorCount = bindings[i].count,
-                         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                         .pBufferInfo = bindings[i].buffers.data()};
-        vk_->vkCmdPushDescriptorSet(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, kernel.pipelineLayout.get(), 0, static_cast<uint32_t>(bindings.size()),
-                                    writes.data());
-        const VkPushConstantsInfo pushInfo{.sType = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO,
-                                           .layout = kernel.pipelineLayout.get(),
-                                           .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-                                           .size = sizeof(Push),
-                                           .pValues = &push};
-        vk_->vkCmdPushConstants2(cmd_, &pushInfo);
-        vk_->vkCmdDispatch(cmd_, static_cast<uint32_t>(groups.x), static_cast<uint32_t>(groups.y), 1);
-        if (timed)
-            timer_->end(cmd_, *timed);
-        if (vk_->vkCmdEndDebugUtilsLabelEXT)
-            vk_->vkCmdEndDebugUtilsLabelEXT(cmd_);
+        instrument(kernel.name, [&] {
+            vk_->vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, kernel.pipeline.get());
+            std::array<VkWriteDescriptorSet, maxBindings> writes{};
+            for (size_t i = 0; i < bindings.size(); ++i)
+                writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                             .dstBinding = bindings[i].binding,
+                             .descriptorCount = bindings[i].count,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                             .pBufferInfo = bindings[i].buffers.data()};
+            vk_->vkCmdPushDescriptorSet(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, kernel.pipelineLayout.get(), 0, static_cast<uint32_t>(bindings.size()),
+                                        writes.data());
+            const VkPushConstantsInfo pushInfo{.sType = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO,
+                                               .layout = kernel.pipelineLayout.get(),
+                                               .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                                               .size = sizeof(Push),
+                                               .pValues = &push};
+            vk_->vkCmdPushConstants2(cmd_, &pushInfo);
+            vk_->vkCmdDispatch(cmd_, static_cast<uint32_t>(groups.x), static_cast<uint32_t>(groups.y), 1);
+        });
     }
 
     // Orders every compute and transfer access before it against every one after it, including earlier submissions.
@@ -1520,20 +1513,25 @@ public:
 
     // Timed and labeled too: a dispatch's first timestamp waits for every earlier command, so a fill beside it would otherwise drop out of the profile.
     void zero(VkBuffer buffer, int64_t offset, int64_t size) const {
-        constexpr const char* name = "BM3D zero";
+        instrument("BM3D zero", [&] { vk_->vkCmdFillBuffer(cmd_, buffer, static_cast<VkDeviceSize>(offset), static_cast<VkDeviceSize>(size), 0); });
+    }
+
+private:
+    template <std::invocable Command>
+    void instrument(const char* name, Command command) const {
+        // Labels name the kernels in GPU captures; the entry points exist only alongside debug utils.
         if (vk_->vkCmdBeginDebugUtilsLabelEXT) {
             const VkDebugUtilsLabelEXT label{.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT, .pLabelName = name};
             vk_->vkCmdBeginDebugUtilsLabelEXT(cmd_, &label);
         }
         const std::optional<uint32_t> timed = timer_ ? timer_->begin(cmd_, name) : std::nullopt;
-        vk_->vkCmdFillBuffer(cmd_, buffer, static_cast<VkDeviceSize>(offset), static_cast<VkDeviceSize>(size), 0);
+        command();
         if (timed)
             timer_->end(cmd_, *timed);
         if (vk_->vkCmdEndDebugUtilsLabelEXT)
             vk_->vkCmdEndDebugUtilsLabelEXT(cmd_);
     }
 
-private:
     const VSVulkanFunctions* vk_{};
     VkCommandBuffer cmd_{};
     KernelTimer* timer_{};
