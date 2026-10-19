@@ -259,7 +259,9 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
 
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
     gpu.nvidiaDriver = props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
-    gpu.llvmpipeDriver = props12.driverID == VK_DRIVER_ID_MESA_LLVMPIPE;
+    // Layered drivers forwarding to llvmpipe (Venus, gfxstream) report their own driver ID but keep its name in the device name.
+    gpu.llvmpipeDriver =
+        props12.driverID == VK_DRIVER_ID_MESA_LLVMPIPE || std::string_view{props.properties.deviceName}.find("llvmpipe") != std::string_view::npos;
     // Half precision groups are prescaled far down (see filterGroup), which takes dark and near-neutral samples into the subnormal range: kernels keep them by
     // DenormPreserve for 16-bit floats, and for the widths the driver ties to them: 64-bit (AMD) or all (Mali on panvk). A device that cannot preserve them
     // filters in single precision. NVIDIA keeps them without the mode, its default is as close to the CPU implementation, and the mode costs its filter about
