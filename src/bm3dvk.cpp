@@ -697,7 +697,7 @@ int windowSide(int range, int step, int extent, int blockSize) {
 
 // Candidate slots of one search window, rows padded to whole items.
 int64_t windowCandidates(int cols, int rows, int itemRows) {
-    return int64_t{(rows + itemRows - 1) / itemRows * itemRows} * cols;
+    return int64_t{divCeil(rows, itemRows) * itemRows} * cols;
 }
 
 // Rows and columns per item of a search in a single chunk: an item costs the distance operations of its candidates (an FMA per sample in correlation form, else
@@ -710,7 +710,7 @@ std::pair<int, int> itemShape(int cols, int rows, int windows, int step, int blo
     double bestCost = std::numeric_limits<double>::infinity();
     for (int nx = 1; nx <= std::min(maxCols, cols); ++nx) {
         for (int ny = 1; ny <= std::min(maxRows, rows) && ny * nx <= bmItemCandidatesMax; ++ny) {
-            const int64_t items = int64_t{(rows + ny - 1) / ny} * ((cols + nx - 1) / nx) * windows;
+            const int64_t items = int64_t{divCeil(rows, ny)} * divCeil(cols, nx) * windows;
             const double rowCost = sampleLoadCost * ((nx - 1) * step + blockSize) + (correlation ? nx * blockSize : 0);
             const double perItem = sampleCost * ny * nx * blockSize * blockSize + rowCost * ((ny - 1) * step + blockSize);
             const double cost = static_cast<double>((items + sg - 1) / sg) * perItem;
