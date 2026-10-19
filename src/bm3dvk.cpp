@@ -598,7 +598,6 @@ struct Plan {
     int height{};
     int planes{};
     std::vector<int> activePlanes;
-    uint32_t activeMask{};
     bool fp16Input{};
     bool fp16Math{};
     bool zScalar{};
@@ -746,7 +745,6 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
 
     // Coefficients are in the domain prescaled by the inverse square root of the transform gain, where the gain cancels.
     const std::array<double, 4> thresholdFactors{1.0, std::numbers::sqrt2, 2.0, std::sqrt(8.0)};
-    plan.activeMask = p.activeMask;
     for (int plane = 0; plane < plan.planes; ++plane) {
         if ((p.activeMask >> plane & 1) != 0)
             plan.activePlanes.push_back(plane);
@@ -954,7 +952,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"PLANES", std::to_string(plan.planes)},
         {"ACC_PLANES", std::to_string(accPlanes)},
         {"ACTIVE_PLANES", activePlanes},
-        {"ACTIVE_MASK", std::to_string(plan.activeMask)},
+        {"ACTIVE_MASK", std::to_string(p.activeMask)},
         {"STORE_T", plan.fp16Input ? "float16_t" : "float"},
         {"T", fp16Math ? "f16vec2" : "vec2"},
         {"S", fp16Math ? "float16_t" : "float"},
@@ -1721,7 +1719,7 @@ private:
     };
 
     // The planes of the reference window anything reads, as a mask: plane 0 for block matching and the filtered planes.
-    uint32_t refPlanes() const { return plan_.activeMask | 1u; }
+    uint32_t refPlanes() const { return params_.activeMask | 1u; }
 
     PoolPtr createPool(VSCore* core) const {
         std::array<char, errorSize> err{};
