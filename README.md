@@ -41,7 +41,7 @@ bm3dvk2.BM3D(vnode clip[, vnode ref=None, str profile="fast", float[] sigma=[10,
 
 - hard_thr: Threshold of hard-thresholding, valid range (0, +inf). Basic estimate only.
 
-- matrix: Matrix coefficients of Gray input, used to normalize `sigma` and `th_mse`: 0 (GBR), 1 (BT.709), 2 (unspecified, chosen by resolution), 4 (FCC), 5 (BT.470BG), 6 (SMPTE 170M), 7 (SMPTE 240M), 9 (BT.2020 NCL), 10 (BT.2020 CL) or 100 (opponent color space). RGB input always uses the opponent color space.
+- matrix: Matrix coefficients of Gray input, used to normalize `sigma` and `th_mse`: 0 (GBR), 1 (BT.709), 2 (unspecified, chosen by resolution), 4 (FCC), 5 (BT.470BG), 6 (SMPTE 170M), 7 (SMPTE 240M), 9 (BT.2020 NCL), 10 (BT.2020 CL) or 100 (opponent color space). RGB input always uses the opponent color space. Gray input frames with the property `BM3D_OPP=1` (opponent color space planes, e.g. from `bm3d.RGB2OPP`) must use 100, or their frame requests fail.
 
 
 ## Profile defaults
