@@ -837,7 +837,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     if (!plan.bmSingleChunk && plan.fullPitch > plan.fullCols) {
         plan.bmSlotKeys = false;
         plan.fullPitch = plan.fullCols;
-        exactCandidates = int64_t{plan.fullCols} * plan.fullRows;
+        exactCandidates = exactCandidatesOf(plan.psCols, plan.psRows);
         plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
     }
     // A search in several chunks takes the general merge.
