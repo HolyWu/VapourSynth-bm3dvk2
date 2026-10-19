@@ -779,11 +779,6 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.fullPitch = plan.fullCols;
     while (plan.bmSlotKeys && laneSpacing(plan.fullPitch) < std::min(bmSpatialLaneSpacing, sg * sg))
         ++plan.fullPitch;
-    // Slot keys need a single chunk: where only the padding keeps the search from fitting one, the general merge takes it unpadded.
-    if (int64_t{plan.fullPitch} * plan.fullRows > bmChunkMax && int64_t{plan.fullCols} * plan.fullRows <= bmChunkMax) {
-        plan.bmSlotKeys = false;
-        plan.fullPitch = plan.fullCols;
-    }
     // A single chunk holds the candidates of every search without item padding, and stages the merges of the rest set in its first 4 * GROUP words; shared
     // memory bounds how many workgroups an SM runs, so every word counts.
     const int64_t list = int64_t{p.groupSize} * sizeof(uint32_t);
@@ -808,7 +803,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
                                                 : std::max(fullCandidates, windowCandidates(plan.psCols, plan.psRows, plan.bmPredictiveRows) * p.psNum);
     if (!plan.noMatching && !std::in_range<int32_t>(maxCandidates))
         fail("too many search candidates, decrease \"bm_range\", \"ps_range\" or \"ps_num\"");
-    const int64_t exactCandidates = exactCandidatesOf(plan.psCols, plan.psRows);
+    int64_t exactCandidates = exactCandidatesOf(plan.psCols, plan.psRows);
     // Spatial windows no wider than a subgroup are register bound: a reference in shared memory frees the registers their selection network needs (measured).
     // Only NVIDIA's compiler keeps the block, indexed by row at run time, in registers; RADV indexes it through branch ladders and AMD's Windows compiler
     // through scratch memory, both far slower than shared memory (RX 7900 XTX on RADV, BM3D(radius=2): blockMatch 4.9 -> 2.9 ms).
@@ -824,7 +819,6 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
                                     (p.radius > 0 ? list * 4 + int64_t{p.psNum} * 2 * sizeof(uint32_t) : 0);
         return perSubgroup * subgroups + (plan.bmRefInRegs ? 1 : 2) * 12;
     };
-    plan.fullRowMajor = plan.bmSlotKeys || laneSpacing(plan.fullPitch) > 2;
     plan.psRowMajor = laneSpacing(plan.psCols) > 2;
     // Distances in correlation form take the reference block offset by its mean, which pays off for blocks larger than bmRefInRegsMax, always read from shared
     // memory. Smaller blocks keep plain differences wherever their reference lives: one in registers, which the compiler reads again from the window instead,
@@ -836,8 +830,16 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // a subgroup whose search takes more subgroup barriers than another one's would stop halfway.
     plan.bmSubgroups = gpu.llvmpipeDriver ? 1 : std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);
     plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
+    // Slot keys need a single chunk: where only the padding keeps the search from fitting one, the general merge takes it unpadded.
+    if (!plan.bmSingleChunk && plan.fullPitch > plan.fullCols) {
+        plan.bmSlotKeys = false;
+        plan.fullPitch = plan.fullCols;
+        exactCandidates = int64_t{plan.fullCols} * plan.fullRows;
+        plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
+    }
     // A search in several chunks takes the general merge.
     plan.bmSlotKeys = plan.bmSlotKeys && plan.bmSingleChunk;
+    plan.fullRowMajor = plan.bmSlotKeys || laneSpacing(plan.fullPitch) > 2;
     if (plan.bmSingleChunk) {
         std::tie(plan.bmFullRows, plan.bmFullCols) =
             itemShape(plan.fullCols, plan.fullRows, 1, p.bmStep, p.blockSize, sg, bmFullLoadCost, plan.bmCorrelation, bmItemRowsMax, bmItemColsMax);
