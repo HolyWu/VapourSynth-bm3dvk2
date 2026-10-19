@@ -118,7 +118,6 @@ float estimate(uint plane, ivec2 p) {
     float den = 0.0;
     for (uint r = 0; r < BLOCK; ++r)
         den += rowSums[gl_LocalInvocationID.y + r][gl_LocalInvocationID.x];
-    barrier();
     const bool inside = p.x < WIDTH && p.y < HEIGHT;
     return inside ? accValue(plane, accNum(pc.frame, p)) / den : 0.0;
 }
