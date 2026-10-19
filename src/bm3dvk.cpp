@@ -1516,12 +1516,19 @@ public:
         vk_->vkCmdPipelineBarrier2(cmd_, &dependency);
     }
 
-    // Timed too: a dispatch's first timestamp waits for every earlier command, so a fill running beside it would otherwise drop out of the profile.
+    // Timed and labeled too: a dispatch's first timestamp waits for every earlier command, so a fill beside it would otherwise drop out of the profile.
     void zero(VkBuffer buffer, int64_t offset, int64_t size) const {
-        const std::optional<uint32_t> timed = timer_ ? timer_->begin(cmd_, "BM3D zero") : std::nullopt;
+        constexpr const char* name = "BM3D zero";
+        if (vk_->vkCmdBeginDebugUtilsLabelEXT) {
+            const VkDebugUtilsLabelEXT label{.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT, .pLabelName = name};
+            vk_->vkCmdBeginDebugUtilsLabelEXT(cmd_, &label);
+        }
+        const std::optional<uint32_t> timed = timer_ ? timer_->begin(cmd_, name) : std::nullopt;
         vk_->vkCmdFillBuffer(cmd_, buffer, static_cast<VkDeviceSize>(offset), static_cast<VkDeviceSize>(size), 0);
         if (timed)
             timer_->end(cmd_, *timed);
+        if (vk_->vkCmdEndDebugUtilsLabelEXT)
+            vk_->vkCmdEndDebugUtilsLabelEXT(cmd_);
     }
 
 private:
