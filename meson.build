@@ -3,7 +3,7 @@ project('bm3dvk2', 'cpp',
     license: 'GPL-3.0-or-later',
     license_files: 'LICENSE',
     meson_version: '>=1.6.0',
-    version: '1.0',
+    version: '2.0',
 )
 
 py = import('python').find_installation(pure: false)
