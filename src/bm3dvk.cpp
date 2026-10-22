@@ -933,13 +933,15 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const int64_t groupShared = plan.globalGroup ? partialShared : plan.groupBytes + filterFixedShared;
 
     // Tiles of filterTileRefs x filterTileRefs reference blocks share an accumulation tile covering their search windows. It pays off only when far more
-    // estimates land in the tile than its flush writes back, and not when it leaves an SM few workgroups where more would run without it.
+    // estimates land in the tile than its flush writes back, and not when it leaves an SM few workgroups where more would run without it. Basic groups of half
+    // precision, which take half the shared memory and keep their registers next to a tile, already gain from half as many estimates (measured).
     plan.searchMargin = std::min(p.bmRange / p.bmStep * p.bmStep, std::max(vi.width, vi.height));
     const int span = (filterTileRefs - 1) * p.blockStep + p.blockSize + plan.searchMargin * 2;
     const double tileSamples = static_cast<double>(p.groupSize) * p.blockSize * p.blockSize * filterTileRefs * filterTileRefs;
     const int64_t tileShared = int64_t{span} * span * sizeof(float);
     const int64_t tileWorkgroups = gpu.maxSharedMemory / (groupShared + tileShared);
-    plan.accTile = tileWorkgroups > 0 && tileSamples >= filterTileGain * span * span &&
+    const double tileGain = !p.wiener && elementBytes == 4 ? filterTileGain / 2 : filterTileGain;
+    plan.accTile = tileWorkgroups > 0 && tileSamples >= tileGain * span * span &&
                    (tileWorkgroups >= (p.wiener ? filterTileWorkgroups : filterTileWorkgroupsBasic) || tileWorkgroups == gpu.maxSharedMemory / groupShared);
     plan.tileRefs = plan.accTile ? filterTileRefs : 1;
     // The basic tile of half precision groups narrows its margin, down to 3/4 of the search's, where that fits another workgroup into an SM: the farthest
