@@ -648,6 +648,7 @@ struct Plan {
     int psCols{1};
     int psRows{1};
     bool psUnion{};
+    bool psPair{};
     int bmChunk{};
     bool bmSingleChunk{};
     bool bmCorrelation{};
@@ -868,15 +869,30 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.bmSlotKeys = plan.bmSlotKeys && plan.bmSingleChunk;
     plan.fullRowMajor = plan.bmSlotKeys || laneSpacing(plan.fullPitch) > 2;
     if (plan.bmSingleChunk) {
+        plan.bmChunk = static_cast<int>(exactCandidates);
+        while (bmShared(plan.bmSubgroups, plan.bmChunk, true) > gpu.maxSharedMemory)
+            --plan.bmSubgroups;
+        // The backward and forward predictive searches of a frame distance run in one pass where the chunk holds both, unless the records of the second side
+        // cost an SM a workgroup or the workgroup a subgroup. The rest set merge of the first side stages in the chunk's first 4 * GROUP words, which must not
+        // reach the second side's.
+        if (p.radius > 0 && !plan.noMatching) {
+            const int64_t psSlots = int64_t{plan.psCols} * plan.psRows;
+            const int sideWindows = plan.psUnion ? 1 : p.psNum;
+            const int64_t shared = bmShared(plan.bmSubgroups, plan.bmChunk, true);
+            plan.bmWindows *= 2;
+            const int64_t pairShared = bmShared(plan.bmSubgroups, plan.bmChunk, true);
+            plan.psPair = psSlots >= int64_t{p.groupSize} * 4 && 2 * sideWindows * psSlots <= exactCandidates && pairShared <= gpu.maxSharedMemory &&
+                          gpu.maxSharedMemory / pairShared >= gpu.maxSharedMemory / shared;
+            if (!plan.psPair)
+                plan.bmWindows /= 2;
+        }
         std::tie(plan.bmFullRows, plan.bmFullCols) =
             itemShape(plan.fullCols, plan.fullRows, 1, p.bmStep, p.blockSize, sg, bmFullLoadCost, plan.bmCorrelation, bmItemRowsMax, bmItemColsMax);
         // Most union windows are a single window, which items of more rows fill in one pass of the subgroup.
         if (p.radius > 0)
-            plan.bmPredictiveRows = itemShape(plan.psCols, plan.psRows, plan.psUnion ? 1 : p.psNum, p.psStep, p.blockSize, sg, bmPredictiveLoadCost,
-                                              plan.bmCorrelation, plan.bmRefInRegs ? bmPredictiveItemRowsMaxInRegs : bmPredictiveItemRowsMax, 1).first;
-        plan.bmChunk = static_cast<int>(exactCandidates);
-        while (bmShared(plan.bmSubgroups, plan.bmChunk, true) > gpu.maxSharedMemory)
-            --plan.bmSubgroups;
+            plan.bmPredictiveRows = itemShape(plan.psCols, plan.psRows, (plan.psUnion ? 1 : p.psNum) * (plan.psPair ? 2 : 1), p.psStep, p.blockSize, sg,
+                                              bmPredictiveLoadCost, plan.bmCorrelation,
+                                              plan.bmRefInRegs ? bmPredictiveItemRowsMaxInRegs : bmPredictiveItemRowsMax, 1).first;
     } else {
         // Chunks hold whole items of either search.
         static_assert(bmItemRows % bmPredictiveItemRows == 0 && bmChunkMax % bmItemRows == 0);
@@ -1016,6 +1032,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"PS_COLS", std::to_string(plan.psCols)},
         {"PS_ROWS", std::to_string(plan.psRows)},
         {"PS_UNION", plan.psUnion ? "1" : "0"},
+        {"PS_PAIR", plan.psPair ? "1" : "0"},
         {"REF_IN_REGS", plan.bmRefInRegs ? "1" : "0"},
         {"WHOLE_ROW_LOADS", gpu.nvidiaDriver ? "0" : "1"},
         {"SSD_CORRELATION", plan.bmCorrelation ? "1" : "0"},

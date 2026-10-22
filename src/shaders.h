@@ -254,8 +254,37 @@ shared float restD[NSG][GROUP];
 shared uint restC[NSG][GROUP];
 shared uint restP[NSG][GROUP];
 shared uint restF[NSG][GROUP];
+#if PS_PAIR
+// The centers of the backward side, then those of the forward side.
+shared uint centers[NSG][PS_NUM * 2];
+#else
 shared uint centers[NSG][PS_NUM];
 shared uint curCenters[NSG][PS_NUM];
+#endif
+#endif
+// A predictive step of PS_PAIR searches the backward and the forward frame at once: windows [0, psSplit) of the search are the backward side's, the others the
+// forward side's, whose records start at SIDE_RECORDS and whose frame starts at psOffset2.
+#define SIDE_RECORDS (PS_NUM + PS_UNION)
+#if RADIUS > 0 && PS_PAIR
+uint psSplit;
+uint psOffset2;
+#define WIN_RECORD(w, full) ((full) || (w) < psSplit ? (w) : (w) + SIDE_RECORDS - psSplit)
+#define WIN_SIDE(w) ((w) < psSplit ? 0u : 1u)
+#define FIRST_WINDOW(w) ((w) < psSplit ? 0u : psSplit)
+#define ITEM_OFFSET(w, offset, full) ((full) || (w) < psSplit ? (offset) : psOffset2)
+#else
+#define WIN_RECORD(w, full) (w)
+#define WIN_SIDE(w) 0u
+#define FIRST_WINDOW(w) 0u
+#define ITEM_OFFSET(w, offset, full) (offset)
+#endif
+// The candD index of element j of a single chunk's search region starting at `first`, which only a pair's forward side has elsewhere than at 0.
+#if SINGLE_CHUNK && PS_PAIR
+#define CAND_AT(first, j) ((first) + (j))
+#define REGION(first) (first)
+#else
+#define CAND_AT(first, j) (j)
+#define REGION(first) 0
 #endif
 // Staging of merge results, (RADIUS > 0 ? 4 : 2) arrays of GROUP words. In a single chunk it takes the candidate slots, which are dead by then, and the
 // selection writes its list directly.
@@ -293,44 +322,59 @@ ivec4 windowAround(ivec2 center, int range, int step) {
 
 // Window w, position of the first candidate and its row and column within the window of an item of a search laid out in items of ny rows and nx columns, cols
 // columns and `items` items per window; false for the columns and rows a clipped window lacks.
-bool itemPos(uint item, uint ny, uint nx, int step, uint cols, uint items, out uint w, out ivec2 pos, out uint row0, out uint col) {
+bool itemPos(uint item, uint ny, uint nx, int step, uint cols, uint items, bool full, out uint w, out ivec2 pos, out uint row0, out uint col) {
     w = item / items;
     const uint local = item - w * items;
     const uint itemCols = (cols + nx - 1) / nx;
     col = local % itemCols * nx;
     row0 = local / itemCols * ny;
-    const ivec4 window = searchWin[sg][w];
+    const ivec4 window = searchWin[sg][WIN_RECORD(w, full)];
     pos = window.xy + ivec2(col, row0) * step;
     return col < uint(window.z) && row0 < uint(window.w);
 }
 
 bool inWindow(uint w, ivec2 pos, int step) {
-    const ivec4 window = searchWin[sg][w];
+    const ivec4 window = searchWin[sg][WIN_RECORD(w, false)];
     const ivec2 d = pos - window.xy;
     return all(greaterThanEqual(d, ivec2(0))) && d.x % step == 0 && d.y % step == 0 && uint(d.x / step) < uint(window.z) && uint(d.y / step) < uint(window.w);
 }
 
-// A predictive search over the bounding box of its windows (see predictiveSearch) holds the windows in records 1..psCenters; where they do not fill the box
+// A predictive search over the bounding box of its windows (see sideWindows) holds the windows in records 1..psCenters; where they do not fill the box
 // (psNotRect), positions outside all of them are rejected. Bit k tells whether row k of the item of ny rows at pos lies in one of them, the box lying on the
 // position grid of every window.
-#if PS_UNION
+// Under PS_PAIR, per side (16-bit field or bit 0 backward, 1 forward): how many centers it has, and whether their windows leave its box unfilled.
 uint psCenters;
+#if PS_PAIR
+uint psNotRect;
+#else
 bool psNotRect;
+#endif
 
-uint centerRows(ivec2 pos, int ny) {
+#if PS_UNION
+uint centerRows(ivec2 pos, int ny, uint w) {
+#if PS_PAIR
+    const uint side = WIN_SIDE(w);
+    if ((psNotRect >> side & 1u) == 0u)
+        return ~0u;
+    const uint numCenters = bitfieldExtract(psCenters, int(side) * 16, 16);
+    const uint rb = side * SIDE_RECORDS;
+#else
     if (!psNotRect)
         return ~0u;
+    const uint numCenters = psCenters;
+    const uint rb = 0;
+#endif
     uint rows = 0;
     [[unroll]] for (uint c = 1; c <= PS_NUM && rows != (1u << ny) - 1u; ++c) {
-        const ivec4 window = searchWin[sg][c];
+        const ivec4 window = searchWin[sg][rb + c];
         const ivec2 d = (pos - window.xy) / PS_STEP;
-        if (c <= psCenters && uint(d.x) < uint(window.z))
+        if (c <= numCenters && uint(d.x) < uint(window.z))
             rows |= (1u << clamp(window.w - d.y, 0, ny)) - (1u << clamp(-d.y, 0, ny));
     }
     return rows;
 }
 #else
-#define centerRows(pos, ny) ~0u
+#define centerRows(pos, ny, w) ~0u
 #endif
 
 // Adds window row `row`, r rows below the item's first candidate, to the distance terms d of the item's ROWS x NX candidates. Each candidate sums its terms by
@@ -375,20 +419,21 @@ void NAME(uint base, uint count, uint offset, ivec2 refPos) { \
     for (uint item = base / ROWS + lane; item < ITEM_END(base, count, ROWS, (MAX_ROWS) * (PITCH), ITEMS); item += SG) { \
         uint w, row0, col; \
         ivec2 pos; \
-        const bool inside = itemPos(item, ROWS, NX, STEP, COLS, ITEMS, w, pos, row0, col); \
+        const bool inside = itemPos(item, ROWS, NX, STEP, COLS, ITEMS, FULL, w, pos, row0, col); \
         float d[ROWS][NX]; \
         [[unroll]] for (int k = 0; k < ROWS; ++k) \
             [[unroll]] for (int x = 0; x < (NX); ++x) \
                 d[k][x] = SUM_ZERO; \
         if (inside) { \
+            const uint itemOffset = ITEM_OFFSET(w, offset, FULL); \
             ROW_UNROLL for (int r = 0; r < (ROWS - 1) * (STEP) + BLOCK; ++r) { \
-                const uint row = offset + uint(min(pos.y + r, HEIGHT - 1)) * WIDTH + uint(pos.x); \
+                const uint row = itemOffset + uint(min(pos.y + r, HEIGHT - 1)) * WIDTH + uint(pos.x); \
                 ADD_ROW(ROWS, NX, STEP) \
             } \
         } \
-        const uint rows = uint(searchWin[sg][w].w); \
-        const uint cols = uint(searchWin[sg][w].z); \
-        const uint kept = FULL ? ~0u : centerRows(pos, ROWS); \
+        const uint rows = uint(searchWin[sg][WIN_RECORD(w, FULL)].w); \
+        const uint cols = uint(searchWin[sg][WIN_RECORD(w, FULL)].z); \
+        const uint kept = FULL ? ~0u : centerRows(pos, ROWS, w); \
         [[unroll]] for (int k = 0; k < ROWS; ++k) \
             [[unroll]] for (int x = 0; x < (NX); ++x) { \
                 const ivec2 p = pos + ivec2(x, k) * (STEP); \
@@ -396,7 +441,7 @@ void NAME(uint base, uint count, uint offset, ivec2 refPos) { \
                 const float dist = min(SSD_CORRELATION != 0 ? max(sum, 0.0) : sum, FLT_MAX); \
                 bool keep = inside && row0 + k < rows && (x == 0 || col + x < cols) && ((kept >> k) & 1u) != 0u && sum <= TH_SSE && !(FULL && p == refPos) && \
                             (SSD_CORRELATION == 0 || sum > -INF); \
-                for (uint e = 0; e < w && keep; ++e) \
+                for (uint e = FIRST_WINDOW(w); e < w && keep; ++e) \
                     keep = !inWindow(e, p, STEP); \
                 if (CAND_STORED(row0, k, MAX_ROWS, col + x, (COLS) % (NX) == 0, COLS)) \
                     candD[sg][CAND_SLOT(ROW_MAJOR, item, k, ROWS, w, row0, col + x, MAX_ROWS, PITCH, base)] = floatBitsToUint(keep ? dist : INF); \
@@ -436,20 +481,20 @@ uint candidateKey(uint i, uint na, uint base, bool full) {
         col = itemRows == ny ? rem / ny : rem / max(rows % ny, 1);
         row = row0 + rem - col * itemRows;
     }
-    return packPos(searchWin[sg][w].xy + ivec2(col, row) * step);
+    return packPos(searchWin[sg][WIN_RECORD(w, full)].xy + ivec2(col, row) * step);
 #else
     const uint ny = full ? NY_FULL : NY_PS;
     uint w, row0, col;
     ivec2 pos;
-    itemPos(s / ny, ny, 1, step, full ? FULL_COLS : PS_COLS, full ? FULL_ITEMS : PS_ITEMS, w, pos, row0, col);
+    itemPos(s / ny, ny, 1, step, full ? FULL_COLS : PS_COLS, full ? FULL_ITEMS : PS_ITEMS, full, w, pos, row0, col);
     return packPos(pos + ivec2(0, int(s % ny) * step));
 #endif
 }
 
 #if !SLOT_KEYS
 // A list entry or candidate distance of mergeCandidates.
-float elementD(uint i, uint na) {
-    return i < na ? listD[sg][i] : uintBitsToFloat(candD[sg][i - na]);
+float elementD(uint i, uint na, uint base) {
+    return i < na ? listD[sg][i] : uintBitsToFloat(candD[sg][CAND_AT(base, i - na)]);
 }
 #endif
 
@@ -525,17 +570,17 @@ void rankedPair(uint k, float lo, uint loI, float hi, uint hiI, out float d, out
     i = subgroupShuffle(high ? hiI : loI, (k - 1) / 2);
 }
 
-// The two smallest (distance, slot) pairs of the lane's slots of candD[0, count) (lane, lane + SG, ...), the earlier slot first among equal distances, and the
-// third smallest distance. Skipping INF distances changes no result but the registers the compiler allocates: callers pass a constant skipInf, true for
-// selectCached (an unconditional min costs it up to 40 registers), false for selectSlots (measured faster).
-void lowestTwo(uint count, bool skipInf, out float d0, out uint i0, out float d1, out uint i1, out float d2) {
+// The two smallest (distance, slot) pairs of the lane's slots of the count candidates from candD[first] on (lane, lane + SG, ...), the earlier slot first among
+// equal distances, and the third smallest distance. Skipping INF distances changes no result but the registers the compiler allocates: callers pass a constant
+// skipInf, true for selectCached (an unconditional min costs it up to 40 registers), false for selectSlots (measured faster).
+void lowestTwo(uint first, uint count, bool skipInf, out float d0, out uint i0, out float d1, out uint i1, out float d2) {
     d0 = INF;
     d1 = INF;
     d2 = INF;
     i0 = 0xFFFFFFFFu;
     i1 = 0xFFFFFFFFu;
     for (uint i = lane; i < count; i += SG) {
-        const float d = uintBitsToFloat(candD[sg][i]);
+        const float d = uintBitsToFloat(candD[sg][CAND_AT(first, i)]);
         if (skipInf && d == INF)
             continue;
         if (d < d0) {
@@ -581,7 +626,7 @@ bool predictiveCut(bool full, uint n, uint nr, float minD) {
 uint selectSlots(uint k) {
     float myD, nextD, thirdD;
     uint myI, nextI;
-    lowestTwo(FULL_SLOTS, false, myD, myI, nextD, nextI, thirdD);
+    lowestTwo(0, FULL_SLOTS, false, myD, myI, nextD, nextI, thirdD);
 
 #if GROUP - 1 <= SG * 2
     float lo, hi;
@@ -661,12 +706,12 @@ uint selectSlots(uint k) {
 // its third smallest distance, so that the rounds need no refills and leave candD as it is. A cached element tied with the third distance may follow an
 // uncached one of that distance: such a head takes key 0, as does the third, and once a round selects one of them, false is returned for mergeCandidates to run
 // as usual.
-bool selectCached(uint nc, uint k, bool full, uint nr, out uint n) {
+bool selectCached(uint first, uint nc, uint k, bool full, uint nr, out uint n) {
     float d0, d1, d2;
     uint i0, i1;
-    lowestTwo(nc, true, d0, i0, d1, i1, d2);
-    uint key0 = d0 != INF ? candidateKey(i0, 0, 0, full) : 0u;
-    uint key1 = d1 != INF ? candidateKey(i1, 0, 0, full) : 0u;
+    lowestTwo(first, nc, true, d0, i0, d1, i1, d2);
+    uint key0 = d0 != INF ? candidateKey(i0, 0, REGION(first), full) : 0u;
+    uint key1 = d1 != INF ? candidateKey(i1, 0, REGION(first), full) : 0u;
     if (d0 == d1 && key1 < key0) {
         const uint smaller = key1;
         key1 = key0;
@@ -744,14 +789,15 @@ bool selectCached(uint nc, uint k, bool full, uint nr, out uint n) {
 }
 #endif
 
-// Selects the k smallest (distance, position) pairs of listD/K[0, na) and the candidates [base, base + nc) held in candD[0, nc) into listD/K, ascending.
+// Selects the k smallest (distance, position) pairs of listD/K[0, na) and the candidates [base, base + nc) held in candD from CAND_AT(base, 0) on into listD/K,
+// ascending.
 // Distances of INF are never selected. Each lane caches the two smallest elements it owns (lane, lane + SG, ...); a lane that wins a round promotes its
 // runner-up, and only once that is used up does the whole subgroup rescan the lane's elements to refill its minimum. A predictive search stops early once its
 // next match could no longer enter the nr entries of the rest set (see mergeRest). A single chunk tries selectCached first.
 uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr) {
 #if SINGLE_CHUNK && GROUP * 2 <= SG
     uint selected;
-    if (selectCached(nc, k, full, nr, selected))
+    if (selectCached(REGION(base), nc, k, full, nr, selected))
         return selected;
 #endif
     const uint total = na + nc;
@@ -760,7 +806,7 @@ uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr) {
     uint myI = 0xFFFFFFFFu, nextI = 0xFFFFFFFFu;
     bool nextKnown = true;
     for (uint i = lane; i < total; i += SG) {
-        const float d = elementD(i, na);
+        const float d = elementD(i, na, base);
         if (d == INF)
             continue;
         const uint key = candidateKey(i, na, base, full);
@@ -800,7 +846,7 @@ uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr) {
             if (myI < na)
                 listD[sg][myI] = INF;
             else
-                candD[sg][myI - na] = floatBitsToUint(INF);
+                candD[sg][CAND_AT(base, myI - na)] = floatBitsToUint(INF);
             if (promote) {
                 myD = nextD;
                 myK = nextK;
@@ -816,7 +862,7 @@ uint mergeCandidates(uint na, uint nc, uint k, uint base, bool full, uint nr) {
         uint key = 0xFFFFFFFFu;
         uint index = 0xFFFFFFFFu;
         for (uint i = winner + lane * SG; i < total; i += SG * SG) {
-            const float e = elementD(i, na);
+            const float e = elementD(i, na, base);
             if (e == INF)
                 continue;
             const uint eKey = candidateKey(i, na, base, full);
@@ -871,44 +917,53 @@ uint search(uint offset, bool full, ivec2 refPos, uint k, uint windows, uint nr)
 }
 
 #if RADIUS > 0
+#if PS_UNION
+// Lays out the windows around the numCenters centers of a side (0 unless PS_PAIR), from record rb = side * SIDE_RECORDS on: the windows go to records
+// rb + 1..numCenters. Where their bounding box fits the layout, it is searched as the single window rb; otherwise they move down to records rb.. and are
+// searched one after another. Returns the side's search windows.
+uint sideWindows(uint side, uint numCenters, out bool notRect) {
+    const uint rb = side * SIDE_RECORDS;
+    notRect = false;
+    ivec2 lo = ivec2(0x7FFFFFFF);
+    ivec2 hi = ivec2(-1);
+    for (uint c = 1; c <= numCenters; ++c) {
+        const ivec4 window = windowAround(unpackPos(centers[sg][side * PS_NUM + c - 1]), PS_RANGE, PS_STEP);
+        searchWin[sg][rb + c] = window;
+        lo = min(lo, window.xy);
+        hi = max(hi, window.xy + (window.zw - 1) * PS_STEP);
+    }
+    bool aligned = true;
+    for (uint c = 1; c <= numCenters; ++c)
+        aligned = aligned && all(equal((searchWin[sg][rb + c].xy - lo) % PS_STEP, ivec2(0)));
+    const uvec2 box = uvec2((hi - lo) / PS_STEP + 1);
+    if (aligned && box.x <= PS_COLS && box.y <= PS_ROWS) {
+        // Two windows fill their box when the box holds no more positions than they do together.
+        uint covered = box.x * box.y;
+        if (numCenters == 2) {
+            const ivec4 a = searchWin[sg][rb + 1];
+            const ivec4 b = searchWin[sg][rb + 2];
+            const ivec2 hiOverlap = min(a.xy + (a.zw - 1) * PS_STEP, b.xy + (b.zw - 1) * PS_STEP);
+            const ivec2 overlap = max((hiOverlap - max(a.xy, b.xy)) / PS_STEP + 1, ivec2(0));
+            covered = uint(a.z * a.w + b.z * b.w - overlap.x * overlap.y);
+        }
+        notRect = numCenters > 2 || covered != box.x * box.y;
+        searchWin[sg][rb] = ivec4(lo, box);
+        return 1;
+    }
+    for (uint c = 0; c < numCenters; ++c)
+        searchWin[sg][rb + c] = searchWin[sg][rb + c + 1];
+    return numCenters;
+}
+#endif
+
+#if !PS_PAIR
 // Predictive search in another frame over the union of the windows around the centers. Returns the number of matches.
 uint predictiveSearch(uint numCenters, uint offset, uint nr) {
 #if PS_UNION
-    // The windows go to records 1..numCenters. Where their bounding box fits the layout, it is searched as the single window 0; otherwise they move down to
-    // records 0.. and are searched one after another.
-    uint windows = numCenters;
+    uint windows = 0;
     bool notRect = false;
-    if (lane == 0) {
-        ivec2 lo = ivec2(0x7FFFFFFF);
-        ivec2 hi = ivec2(-1);
-        for (uint c = 1; c <= numCenters; ++c) {
-            const ivec4 window = windowAround(unpackPos(centers[sg][c - 1]), PS_RANGE, PS_STEP);
-            searchWin[sg][c] = window;
-            lo = min(lo, window.xy);
-            hi = max(hi, window.xy + (window.zw - 1) * PS_STEP);
-        }
-        bool aligned = true;
-        for (uint c = 1; c <= numCenters; ++c)
-            aligned = aligned && all(equal((searchWin[sg][c].xy - lo) % PS_STEP, ivec2(0)));
-        const uvec2 box = uvec2((hi - lo) / PS_STEP + 1);
-        if (aligned && box.x <= PS_COLS && box.y <= PS_ROWS) {
-            // Two windows fill their box when the box holds no more positions than they do together.
-            uint covered = box.x * box.y;
-            if (numCenters == 2) {
-                const ivec4 a = searchWin[sg][1];
-                const ivec4 b = searchWin[sg][2];
-                const ivec2 hiOverlap = min(a.xy + (a.zw - 1) * PS_STEP, b.xy + (b.zw - 1) * PS_STEP);
-                const ivec2 overlap = max((hiOverlap - max(a.xy, b.xy)) / PS_STEP + 1, ivec2(0));
-                covered = uint(a.z * a.w + b.z * b.w - overlap.x * overlap.y);
-            }
-            notRect = numCenters > 2 || covered != box.x * box.y;
-            searchWin[sg][0] = ivec4(lo, box);
-            windows = 1;
-        } else {
-            for (uint c = 0; c < numCenters; ++c)
-                searchWin[sg][c] = searchWin[sg][c + 1];
-        }
-    }
+    if (lane == 0)
+        windows = sideWindows(0, numCenters, notRect);
     windows = subgroupBroadcast(windows, 0);
     psNotRect = subgroupBroadcast(notRect, 0);
     psCenters = numCenters;
@@ -920,6 +975,7 @@ uint predictiveSearch(uint numCenters, uint offset, uint nr) {
     syncSubgroup();
     return search(offset, false, ivec2(-1), GROUP, windows, nr);
 }
+#endif
 
 // Keeps the GROUP - 1 smallest (distance, key) entries of the rest set and the frame list in listD/K, the key of a match being frame * GROUP + its rank in its
 // frame's list: as a frame lists its matches by (distance, position), equal distances order by frame and position like the CPU implementation. Both sets
@@ -955,12 +1011,63 @@ uint mergeRest(uint nr, uint nl, uint frame) {
     return n;
 }
 
-// Keeps the best positions of a frame as the search centers of the next frame.
-void saveCenters(uint n) {
+// Keeps the best positions of a frame as the search centers of the next frame of its side, synchronized by the mergeRest that always follows.
+void saveCenters(uint n, uint side) {
     for (uint i = lane; i < min(n, uint(PS_NUM)); i += SG)
-        centers[sg][i] = listK[sg][i];
-    syncSubgroup();
+        centers[sg][side * PS_NUM + i] = listK[sg][i];
 }
+
+#if PS_PAIR
+// Selects the matches of a side whose distances fill candD from `first` on, and merges them into the rest set. Returns the size of the rest set.
+uint predictiveSide(uint side, uint first, uint windows, uint frame, uint nr) {
+    restFirst = side == 1u;
+    const uint nl = mergeCandidates(0, windows * PS_SLOTS, GROUP, first, false, nr);
+    // A frame without matches keeps the centers of the last one that had some, as the CPU implementation does.
+    saveCenters(nl, side);
+    if (nl > 0)
+        psCenters = bitfieldInsert(psCenters, min(nl, uint(PS_NUM)), int(side) * 16, 16);
+    return mergeRest(nr, nl, frame);
+}
+
+// The predictive searches in frames cur - k (the backward side, if back) and cur + k (the forward side, if fwd), their distances in one pass over both sides'
+// windows. Where candD cannot hold both, the forward side is deferred to a step of its own at the same k. The rest set gains the backward frame's matches
+// first, so the tie rules of predictiveCut keep holding; as no match it drops can enter the final set, the result is that of the searches one direction after
+// the other. Returns the size of the rest set.
+uint predictiveStep(bool back, bool fwd, uint k, uint nr, out bool deferred) {
+    uint windows = 0;
+    bool notRect = false;
+#if PS_UNION
+    // Lane s lays out side s.
+    if (lane < 2u && (lane == 0u ? back : fwd))
+        windows = sideWindows(lane, bitfieldExtract(psCenters, int(lane) * 16, 16), notRect);
+    const uint windows0 = subgroupBroadcast(windows, 0);
+    uint windows1 = subgroupBroadcast(windows, 1);
+    psNotRect = subgroupBallot(notRect).x & 3u;
+#else
+    const uint windows0 = back ? psCenters & 0xFFFFu : 0u;
+    uint windows1 = fwd ? psCenters >> 16 : 0u;
+    for (uint i = lane; i < PS_NUM * 2; i += SG) {
+        const uint side = i / PS_NUM;
+        const uint c = i - side * PS_NUM;
+        if (c < (side == 0u ? windows0 : windows1))
+            searchWin[sg][side * SIDE_RECORDS + c] = windowAround(unpackPos(centers[sg][i]), PS_RANGE, PS_STEP);
+    }
+#endif
+    deferred = (windows0 + windows1) * PS_SLOTS > CHUNK;
+    if (deferred)
+        windows1 = 0u;
+    syncSubgroup();
+    psSplit = windows0;
+    psOffset2 = frameOffset(pc.cur + k);
+    predictiveDistances(0, (windows0 + windows1) * PS_SLOTS, frameOffset(pc.cur - k), ivec2(-1));
+    syncSubgroup();
+    if (back)
+        nr = predictiveSide(0, 0, windows0, pc.cur - k, nr);
+    if (windows1 > 0u)
+        nr = predictiveSide(1, windows0 * PS_SLOTS, windows1, pc.cur + k, nr);
+    return nr;
+}
+#endif
 #endif
 #endif
 
@@ -1030,6 +1137,20 @@ void main() {
             restP[sg][i] = listK[sg][i];
             restF[sg][i] = pc.cur;
         }
+#if PS_PAIR
+        // Both sides start from the current frame's centers.
+        for (uint i = lane; i < PS_NUM * 2; i += SG) {
+            const uint c = i % PS_NUM;
+            if (c <= n)
+                centers[sg][i] = c == 0 ? packPos(refPos) : listK[sg][c - 1];
+        }
+        syncSubgroup();
+        psCenters = min(n + 1, uint(PS_NUM)) * 0x10001u;
+        uint nr = n;
+        bool deferred = false;
+        for (uint k = 1; k <= pc.cur || pc.cur + k < pc.numFrames; k += deferred ? 0u : 1u)
+            nr = predictiveStep(k <= pc.cur && !deferred, pc.cur + k < pc.numFrames, k, nr, deferred);
+#else
         if (lane == 0)
             curCenters[sg][0] = packPos(refPos);
         for (uint i = lane; i < min(n, uint(PS_NUM - 1)); i += SG)
@@ -1047,12 +1168,13 @@ void main() {
             for (int f = int(pc.cur) + dir; f >= 0 && f < int(pc.numFrames); f += dir) {
                 const uint nl = predictiveSearch(numCenters, frameOffset(uint(f)), nr);
                 // A frame without matches keeps the centers of the last one that had some, as the CPU implementation does.
-                saveCenters(nl);
+                saveCenters(nl, 0);
                 if (nl > 0)
                     numCenters = min(nl, uint(PS_NUM));
                 nr = mergeRest(nr, nl, uint(f));
             }
         }
+#endif
 
         // Like the CPU implementation, the members follow the reference block sorted by distance, as the rest set holds them.
         for (uint i = lane; i < nr; i += SG)
