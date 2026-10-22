@@ -88,6 +88,7 @@ constexpr int filterTileRefs = 4;
 constexpr double filterTileGain = 10.0;   // least ratio of estimates accumulated in a tile to the tile's area (measured)
 constexpr int64_t filterTileWorkgroups = 3; // least workgroups per SM a tile may leave where more would run without it
 constexpr int64_t filterTileWorkgroupsBasic = 2; // the same for basic estimates, without a reference group (measured)
+constexpr int filterPaddedSizedGroup = 16; // largest group whose permuted layout keeps the workgroup size of the padded one (measured)
 constexpr uint32_t preferredSubgroupSize = 32;
 constexpr uint32_t appleVendorId = 0x106B;
 constexpr int64_t globalGroupBudget = int64_t{128} << 20;
@@ -935,23 +936,25 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.tileRefs = plan.accTile ? filterTileRefs : 1;
     plan.tileSpan = plan.accTile ? span : 1;
 
-    // Shared memory bounds the workgroups an SM runs, an SM granting each workgroup the device's limit per workgroup at most (measured): where few fit, larger
-    // workgroups keep more warps busy.
-    const int64_t workgroupShared = groupShared + (plan.accTile ? tileShared : 0);
-    const int64_t workgroupsPerSm = std::max<int64_t>(gpu.maxSharedMemory / workgroupShared, 1);
-    while (plan.filterWorkgroup < std::min(filterWorkgroupLimit, gpu.maxWorkgroup) && workgroupsPerSm * plan.filterWorkgroup / sg < filterWarpsTarget)
-        plan.filterWorkgroup *= 2;
-
     // Without the odd stride, blocks of four row pairs of 8-byte elements are permuted to stay free of bank conflicts (see swizzled in shaders.h), where that
-    // fits more workgroups into an SM. The workgroup size and the tile stay those chosen for the padded layout.
+    // fits more workgroups into an SM. The tile stays the one chosen for the padded layout, and so does the workgroup size for groups of up to
+    // filterPaddedSizedGroup blocks. Larger ones size it for the permuted layout: their single precision z-lines need more registers than NVIDIA leaves the
+    // padded layout's larger workgroups (measured).
+    const int64_t workgroupShared = groupShared + (plan.accTile ? tileShared : 0);
     const int64_t paddingBytes = plan.groupBytes / plan.blockPadded;
     if (elementBytes == 8 && halfBlock == 4 && !plan.pingpong && !plan.globalGroup &&
-        gpu.maxSharedMemory / (workgroupShared - paddingBytes) > workgroupsPerSm) {
+        gpu.maxSharedMemory / (workgroupShared - paddingBytes) > gpu.maxSharedMemory / workgroupShared) {
         plan.groupSwizzle = true;
         --plan.blockPadded;
         plan.groupBytes -= paddingBytes;
     }
     plan.filterShared = workgroupShared - (plan.groupSwizzle ? paddingBytes : 0);
+
+    // Where shared memory leaves few workgroups per SM, larger workgroups keep more warps busy. The count is modeled against the device's limit per workgroup,
+    // as filterWarpsTarget was measured with, though NVIDIA's real carveout is about twice that.
+    const int64_t workgroupsPerSm = std::max<int64_t>(gpu.maxSharedMemory / (p.groupSize > filterPaddedSizedGroup ? plan.filterShared : workgroupShared), 1);
+    while (plan.filterWorkgroup < std::min(filterWorkgroupLimit, gpu.maxWorkgroup) && workgroupsPerSm * plan.filterWorkgroup / sg < filterWarpsTarget)
+        plan.filterWorkgroup *= 2;
 
     // Matching and filtering run in batches of whole tile rows of reference blocks, bounded by the size of the matches, or of fewer rows where the bound leaves
     // no whole tile row.
