@@ -1079,6 +1079,54 @@ bool selectSides(uint first1, uint nc0, uint nc1, uint nr, out uint n) {
     syncSubgroup();
     return !anyLane(pops > 2 || (pops > 0 && (pops == 1 ? d0 : d1) == d2));
 }
+
+// Entry j of set s, as mergeRest keys them: the rest set (s = 0), the backward side's list of frame f0 (1) or the forward side's of frame f1 (2).
+void sideEntry(uint s, uint j, uint f0, uint f1, out float d, out uint c) {
+    d = s == 0u ? restD[sg][j] : s == 1u ? listD[sg][j] : uintBitsToFloat(candD[sg][SIDE_LIST + j]);
+    c = s == 0u ? restC[sg][j] : (s == 1u ? f0 : f1) * GROUP + j;
+}
+
+// mergeRest of both sides' lists at once (see selectSides): an entry ranks its index in its set plus the entries of the other two sets preceding it.
+uint mergeRestSides(uint nr, uint n0, uint f0, uint n1, uint f1) {
+    const uint total = nr + n0 + n1;
+    for (uint i = lane; i < total; i += SG) {
+        const uint s = i < nr ? 0u : i < nr + n0 ? 1u : 2u;
+        const uint j = s == 0u ? i : s == 1u ? i - nr : i - nr - n0;
+        float d;
+        uint c;
+        sideEntry(s, j, f0, f1, d, c);
+        uint rank = j;
+        [[unroll]] for (uint t = 0; t < 3; ++t) {
+            const uint size = t == 0u ? nr : t == 1u ? n0 : n1;
+            if (t == s)
+                continue;
+            for (uint e = 0; e < size; ++e) {
+                float de;
+                uint ce;
+                sideEntry(t, e, f0, f1, de, ce);
+                if (!keyLess(de, ce, d, c))
+                    break;
+                ++rank;
+            }
+        }
+        if (rank < GROUP - 1) {
+            STAGE(rank) = floatBitsToUint(d);
+            STAGE(GROUP + rank) = c;
+            STAGE(GROUP * 2 + rank) = s == 0u ? restP[sg][j] : s == 1u ? listK[sg][j] : candD[sg][SIDE_LIST + GROUP + j];
+            STAGE(GROUP * 3 + rank) = s == 0u ? restF[sg][j] : s == 1u ? f0 : f1;
+        }
+    }
+    const uint n = min(total, uint(GROUP - 1));
+    syncSubgroup();
+    for (uint i = lane; i < n; i += SG) {
+        restD[sg][i] = uintBitsToFloat(STAGE(i));
+        restC[sg][i] = STAGE(GROUP + i);
+        restP[sg][i] = STAGE(GROUP * 2 + i);
+        restF[sg][i] = STAGE(GROUP * 3 + i);
+    }
+    syncSubgroup();
+    return n;
+}
 #endif
 
 #if PS_PAIR
@@ -1142,13 +1190,7 @@ uint predictiveStep(bool back, bool fwd, uint k, uint nr, out bool deferred) {
             psCenters = bitfieldInsert(psCenters, min(n0, uint(PS_NUM)), 0, 16);
         if (n1 > 0)
             psCenters = bitfieldInsert(psCenters, min(n1, uint(PS_NUM)), 16, 16);
-        nr = mergeRest(nr, n0, pc.cur - k);
-        for (uint i = lane; i < n1; i += SG) {
-            listD[sg][i] = uintBitsToFloat(candD[sg][SIDE_LIST + i]);
-            listK[sg][i] = candD[sg][SIDE_LIST + GROUP + i];
-        }
-        syncSubgroup();
-        return mergeRest(nr, n1, pc.cur + k);
+        return mergeRestSides(nr, n0, pc.cur - k, n1, pc.cur + k);
     }
 #endif
     if (back)
