@@ -58,7 +58,7 @@ constexpr int maxBlockSize = 64;
 constexpr int maxGroupSize = 256;
 constexpr int maxDimension = 65536; // block positions are packed as two 16-bit coordinates
 constexpr int imageTile = 16;
-constexpr int bmSubgroupsPreferred = 2;
+constexpr int bmSubgroupsPreferred = 4;
 constexpr int bmChunkMax = 2048;
 // Candidate rows per lane in the blockMatch kernel when searches take several chunks: NY_FULL of the full search is bmItemRows, NY_PS of predictive searches
 // bmPredictiveItemRows for groups larger than bmSmallGroup and bmItemRows otherwise (measured best); both are 1 for search steps of a block or more. In a
