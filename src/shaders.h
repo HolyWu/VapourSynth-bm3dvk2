@@ -1404,8 +1404,17 @@ uint zTableOffset(uint n) {
 
 inline constexpr std::string_view filterTail = R"glsl(
 // The odd stride of 8-byte elements leaves a padding column no pass reads. Gather and aggregate skip it where that saves a pass over a full group; elsewhere
-// their irregular rows cost more in bank conflicts than the skipped elements save (measured).
+// their irregular rows cost more in bank conflicts than the skipped elements save (measured). Under a tile, where a block's unpadded elements fill a
+// subgroup, a subgroup takes whole blocks: the member is uniform and an element's place in its block fixed, which spares the index arithmetic of the
+// tile's cheap accumulation (measured faster only there).
+#define WARP_BLOCKS (ACC_TILE != 0 && HB * HB * 2 == SG)
 void gather(uint k, float scale) {
+#if WARP_BLOCKS
+    const uint p = gl_SubgroupInvocationID / (HB * 2);
+    const uint x = gl_SubgroupInvocationID % (HB * 2);
+    for (uint z = gl_SubgroupID; z < k; z += NUM_SG) {
+        const uint i = z * BLK_T + p * BLOCK_P + x;
+#else
 #if (GROUP * BLK_T + WG - 1) / WG > (GROUP * HB * HB * 2 + WG - 1) / WG
     for (uint l = gl_LocalInvocationIndex; l < k * HB * HB * 2; l += WG) {
         const uint i = l / (HB * 2) * BLOCK_P + l % (HB * 2);
@@ -1415,6 +1424,7 @@ void gather(uint k, float scale) {
         const uint z = i / BLK_T;
         const uint p = i % BLK_T / BLOCK_P;
         const uint x = i % BLOCK_P;
+#endif
         const uvec2 m = member(z);
         const ivec2 pos = unpackPos(m.x);
         const uint offset = winIndex(pc.firstFrame + m.y, pos + ivec2(x, p * 2));
@@ -1640,6 +1650,12 @@ void aggregate(uint k, float numWeight, float denWeight) {
 #if BLOCK <= MAX_CODELET
     rowPass(k, 1, true);
     SYNC();
+#if WARP_BLOCKS && HB * BLOCK == SG
+    const uint p = gl_SubgroupInvocationID / BLOCK;
+    const uint x = gl_SubgroupInvocationID % BLOCK;
+    for (uint z = gl_SubgroupID; z < k; z += NUM_SG)
+        accumulatePair(z, p, x, vec2(G(swizzled(z, z * BLK_T + p * BLOCK_P + x))) * numWeight);
+#else
 #if (GROUP * BLK_T + WG - 1) / WG > (GROUP * HB * BLOCK + WG - 1) / WG
     for (uint l = gl_LocalInvocationIndex; l < k * HB * BLOCK; l += WG) {
         const uint i = l / BLOCK * BLOCK_P + l % BLOCK;
@@ -1650,6 +1666,7 @@ void aggregate(uint k, float numWeight, float denWeight) {
         if (x < BLOCK)
             accumulatePair(i / BLK_T, i % BLK_T / BLOCK_P, x, vec2(G(swizzled(i / BLK_T, i))) * numWeight);
     }
+#endif
 #else
     for (uint e = gl_LocalInvocationIndex; e < k * HB * BLOCK; e += WG) {
         const uint z = e / (HB * BLOCK);
