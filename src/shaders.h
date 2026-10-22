@@ -922,16 +922,20 @@ uint predictiveSearch(uint numCenters, uint offset, uint nr) {
 }
 
 // Keeps the GROUP - 1 smallest (distance, key) entries of the rest set and the frame list in listD/K, the key of a match being frame * GROUP + its rank in its
-// frame's list: as a frame lists its matches by (distance, position), equal distances order by frame and position like the CPU implementation. Both sets are
-// small and hold unique keys, so every element finds its rank directly instead of in selection rounds.
+// frame's list: as a frame lists its matches by (distance, position), equal distances order by frame and position like the CPU implementation. Both sets
+// ascend by (distance, key) and hold unique keys, so every element finds its rank directly instead of in selection rounds: its index in its own set plus the
+// elements of the other set preceding it.
 uint mergeRest(uint nr, uint nl, uint frame) {
     const uint total = nr + nl;
     for (uint i = lane; i < total; i += SG) {
-        const float d = i < nr ? restD[sg][i] : listD[sg][i - nr];
-        const uint c = i < nr ? restC[sg][i] : frame * GROUP + i - nr;
-        uint rank = 0;
-        for (uint j = 0; j < total; ++j)
-            rank += keyLess(j < nr ? restD[sg][j] : listD[sg][j - nr], j < nr ? restC[sg][j] : frame * GROUP + j - nr, d, c) ? 1 : 0;
+        const bool fromRest = i < nr;
+        const float d = fromRest ? restD[sg][i] : listD[sg][i - nr];
+        const uint c = fromRest ? restC[sg][i] : frame * GROUP + i - nr;
+        uint preceding = 0;
+        while (preceding < (fromRest ? nl : nr) &&
+               keyLess(fromRest ? listD[sg][preceding] : restD[sg][preceding], fromRest ? frame * GROUP + preceding : restC[sg][preceding], d, c))
+            ++preceding;
+        const uint rank = (fromRest ? i : i - nr) + preceding;
         if (rank < GROUP - 1) {
             STAGE(rank) = floatBitsToUint(d);
             STAGE(GROUP + rank) = c;
