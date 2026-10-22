@@ -91,6 +91,7 @@ constexpr double filterTileGain = 10.0;   // least ratio of estimates accumulate
 constexpr int64_t filterTileWorkgroups = 3; // least workgroups per SM a tile may leave where more would run without it
 constexpr int64_t filterTileWorkgroupsBasic = 2; // the same for basic estimates, without a reference group (measured)
 constexpr int filterPaddedSizedGroup = 16; // largest group whose permuted layout keeps the workgroup size of the padded one (measured)
+constexpr int filterTemporalWideGroup = 16; // smallest single precision basic temporal group whose workgroup doubles (measured)
 constexpr uint32_t preferredSubgroupSize = 32;
 constexpr uint32_t appleVendorId = 0x106B;
 constexpr int64_t globalGroupBudget = int64_t{128} << 20;
@@ -978,6 +979,10 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const int64_t workgroupsPerSm = std::max<int64_t>(gpu.maxSharedMemory / (p.groupSize > filterPaddedSizedGroup ? plan.filterShared : workgroupShared), 1);
     while (plan.filterWorkgroup < std::min(filterWorkgroupLimit, gpu.maxWorkgroup) && workgroupsPerSm * plan.filterWorkgroup / sg < filterWarpsTarget)
         plan.filterWorkgroup *= 2;
+    // Single precision basic groups of filterTemporalWideGroup blocks or more, gathered from several frames without a tile, take twice the invocations, which
+    // keep more of their loads in flight (measured).
+    if (p.radius > 0 && !p.wiener && elementBytes == 8 && !plan.accTile && p.groupSize >= filterTemporalWideGroup)
+        plan.filterWorkgroup = std::min(plan.filterWorkgroup * 2, std::min(filterWorkgroupLimit, gpu.maxWorkgroup));
 
     // Matching and filtering run in batches of whole tile rows of reference blocks, bounded by the size of the matches, or of fewer rows where the bound leaves
     // no whole tile row.
