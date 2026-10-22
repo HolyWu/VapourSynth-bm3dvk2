@@ -216,6 +216,9 @@ struct Gpu {
     int64_t maxStorageRange{};
     uint32_t maxStorageBuffers{};
     float timestampPeriod{};
+    // Resolved only when profiling, where the core enabled pipeline executable properties.
+    PFN_vkGetPipelineExecutablePropertiesKHR getPipelineExecutables{};
+    PFN_vkGetPipelineExecutableStatisticsKHR getPipelineStatistics{};
 };
 
 bool hasDeviceExtension(const Gpu& gpu, std::string_view name) {
@@ -226,6 +229,13 @@ bool hasDeviceExtension(const Gpu& gpu, std::string_view name) {
     if (gpu.vk->vkEnumerateDeviceExtensionProperties(gpu.handles.physicalDevice, nullptr, &count, extensions.data()) != VK_SUCCESS)
         fail("failed to enumerate device extensions");
     return std::ranges::any_of(extensions, [name](const VkExtensionProperties& e) { return name == e.extensionName; });
+}
+
+// Profiling times every dispatch and fill (see KernelTimer) and logs the statistics of every kernel: enabled by the environment variable BM3DVK_PROFILE set to
+// anything but empty or 0.
+bool profilingRequested() {
+    const char* value = std::getenv("BM3DVK_PROFILE");
+    return value && *value && std::string_view{value} != "0";
 }
 
 Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
@@ -290,6 +300,20 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     gpu.maxStorageRange = static_cast<int64_t>(std::min<uint64_t>(limits.maxStorageBufferRange, props13.maxBufferSize));
     gpu.maxStorageBuffers = limits.maxPerStageDescriptorStorageBuffers;
     gpu.timestampPeriod = limits.timestampPeriod;
+
+    if (profilingRequested() && hasDeviceExtension(gpu, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
+        VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executableInfo{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+        VkPhysicalDeviceFeatures2 executableFeatures{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &executableInfo};
+        gpu.vk->vkGetPhysicalDeviceFeatures2(gpu.handles.physicalDevice, &executableFeatures);
+        if (executableInfo.pipelineExecutableInfo == VK_TRUE) {
+            const VkDevice device = gpu.handles.device;
+            gpu.getPipelineExecutables =
+                reinterpret_cast<PFN_vkGetPipelineExecutablePropertiesKHR>(gpu.vk->vkGetDeviceProcAddr(device, "vkGetPipelineExecutablePropertiesKHR"));
+            gpu.getPipelineStatistics =
+                reinterpret_cast<PFN_vkGetPipelineExecutableStatisticsKHR>(gpu.vk->vkGetDeviceProcAddr(device, "vkGetPipelineExecutableStatisticsKHR"));
+        }
+    }
     return gpu;
 }
 
@@ -1148,6 +1172,7 @@ struct Kernel {
     PipelineLayoutOwner pipelineLayout;
     PipelineOwner pipeline;
     const char* name{};
+    std::string statistics; // as the driver reports them, when profiling
 };
 
 // A float controls execution mode for one width, with the capability it requires.
@@ -1258,6 +1283,48 @@ int64_t workgroupBytes(std::span<const uint32_t> code) {
     return bytes;
 }
 
+// The statistics of each executable of a pipeline created to capture them, such as its registers and memory.
+std::string pipelineStatistics(const Gpu& gpu, const char* name, VkPipeline pipeline) {
+    const VkDevice device = gpu.handles.device;
+    const VkPipelineInfoKHR info{.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pipeline};
+    uint32_t executables{};
+    if (gpu.getPipelineExecutables(device, &info, &executables, nullptr) != VK_SUCCESS)
+        return {};
+    std::vector<VkPipelineExecutablePropertiesKHR> props(executables, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
+    if (gpu.getPipelineExecutables(device, &info, &executables, props.data()) != VK_SUCCESS)
+        return {};
+    std::string s;
+    for (uint32_t i = 0; i < executables; ++i) {
+        const VkPipelineExecutableInfoKHR executable{.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = pipeline, .executableIndex = i};
+        uint32_t count{};
+        if (gpu.getPipelineStatistics(device, &executable, &count, nullptr) != VK_SUCCESS)
+            continue;
+        std::vector<VkPipelineExecutableStatisticKHR> stats(count, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
+        if (gpu.getPipelineStatistics(device, &executable, &count, stats.data()) != VK_SUCCESS)
+            continue;
+        s += (s.empty() ? ""s : "\n"s) + name + " (" + props[i].name + "):";
+        for (const VkPipelineExecutableStatisticKHR& stat : stats) {
+            s += " "s + stat.name + " = ";
+            switch (stat.format) {
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:
+                s += stat.value.b32 ? "true" : "false";
+                break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR:
+                s += std::to_string(stat.value.i64);
+                break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR:
+                s += std::to_string(stat.value.u64);
+                break;
+            default:
+                s += std::to_string(stat.value.f64);
+                break;
+            }
+            s += ";";
+        }
+    }
+    return s;
+}
+
 Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
     const VkDevice device = gpu.handles.device;
     std::vector<VkDescriptorSetLayoutBinding> bindings;
@@ -1305,6 +1372,7 @@ Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, .pNext = &moduleInfo, .requiredSubgroupSize = gpu.subgroupSize};
     const VkComputePipelineCreateInfo pipelineInfo{
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .flags = gpu.getPipelineStatistics ? VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR : VkPipelineCreateFlags{},
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                   .pNext = spec.pinSubgroup && gpu.pinSubgroup ? static_cast<const void*>(&subgroupInfo) : &moduleInfo,
                   .flags = spec.pinSubgroup ? VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT : VkPipelineShaderStageCreateFlags{},
@@ -1315,6 +1383,8 @@ Kernel createKernel(const Gpu& gpu, VSCore* core, const KernelSpec& spec) {
     if (gpu.vk->vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS)
         fail("failed to create a compute pipeline");
     kernel.pipeline = {device, *gpu.vk, pipeline};
+    if (gpu.getPipelineStatistics)
+        kernel.statistics = pipelineStatistics(gpu, spec.name, pipeline);
     return kernel;
 }
 
@@ -1387,8 +1457,7 @@ struct Groups {
     int y{1};
 };
 
-// GPU time of every dispatch and fill from timestamp queries, for profiling: enabled by the environment variable BM3DVK_PROFILE set to anything but empty or 0,
-// and logged when the filter is freed. Commands past the capacity go untimed.
+// GPU time of every dispatch and fill from timestamp queries when profiling, logged when the filter is freed. Commands past the capacity go untimed.
 class KernelTimer {
 public:
     explicit KernelTimer(const Gpu& gpu) : vk_{gpu.vk}, device_{gpu.handles.device}, period_{gpu.timestampPeriod}, names_(capacity / 2) {
@@ -1466,11 +1535,6 @@ private:
     std::atomic<uint32_t> next_{};
     std::vector<const char*> names_;
 };
-
-bool profilingRequested() {
-    const char* value = std::getenv("BM3DVK_PROFILE");
-    return value && *value && std::string_view{value} != "0";
-}
 
 class Recorder {
 public:
@@ -1641,6 +1705,9 @@ public:
                                 plan_.filterShared});
         normalize_ = createKernel(gpu_, core,
                                   {"BM3D normalize", kernelSource(shader::normalize), imageLayout, sizeof(NormalizePush), false, modes, plan_.normalizeShared});
+        for (const Kernel* kernel : {&convert_, &blockMatch_, &filter_, &normalize_})
+            if (!kernel->statistics.empty())
+                vsapi.logMessage(mtInformation, kernel->statistics.c_str(), core);
         if (plan_.pingpong)
             uploadCosTable(core);
     }
