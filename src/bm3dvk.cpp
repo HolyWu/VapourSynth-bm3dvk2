@@ -86,6 +86,7 @@ constexpr int filterWorkgroupMax = 256;
 constexpr int filterWorkgroupLimit = 512; // largest workgroup the filter grows to for filterWarpsTarget
 constexpr int filterWarpsTarget = 12;     // warps per SM the filter workgroups should keep busy (measured)
 constexpr int filterTileRefs = 4;
+constexpr int filterSpatialTileRefs = 2; // tile side of spatial plans without an accumulation tile (measured)
 constexpr double filterTileGain = 10.0;   // least ratio of estimates accumulated in a tile to the tile's area (measured)
 constexpr int64_t filterTileWorkgroups = 3; // least workgroups per SM a tile may leave where more would run without it
 constexpr int64_t filterTileWorkgroupsBasic = 2; // the same for basic estimates, without a reference group (measured)
@@ -943,7 +944,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     const double tileGain = !p.wiener && elementBytes == 4 ? filterTileGain / 2 : filterTileGain;
     plan.accTile = tileWorkgroups > 0 && tileSamples >= tileGain * span * span &&
                    (tileWorkgroups >= (p.wiener ? filterTileWorkgroups : filterTileWorkgroupsBasic) || tileWorkgroups == gpu.maxSharedMemory / groupShared);
-    plan.tileRefs = plan.accTile ? filterTileRefs : 1;
+    // Without it, a spatial workgroup still takes small tiles, whose neighbouring groups share most samples in its SM's L1; temporal groups do not gain by it.
+    plan.tileRefs = plan.accTile ? filterTileRefs : p.radius == 0 ? filterSpatialTileRefs : 1;
     // The basic tile of half precision groups narrows its margin, down to 3/4 of the search's, where that fits another workgroup into an SM: the farthest
     // matches of its outer reference blocks then go to memory. Single precision groups lose by it, the narrower tile costing them registers (measured).
     const auto tileSpanOf = [&](int margin) { return (filterTileRefs - 1) * p.blockStep + p.blockSize + margin * 2; };
