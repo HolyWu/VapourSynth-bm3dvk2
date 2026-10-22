@@ -573,13 +573,13 @@ void rankedPair(uint k, float lo, uint loI, float hi, uint hiI, out float d, out
 // The two smallest (distance, slot) pairs of the lane's slots of the count candidates from candD[first] on (lane, lane + SG, ...), the earlier slot first among
 // equal distances, and the third smallest distance. Skipping INF distances changes no result but the registers the compiler allocates: callers pass a constant
 // skipInf, true for selectCached (an unconditional min costs it up to 40 registers), false for selectSlots (measured faster).
-void lowestTwo(uint first, uint count, bool skipInf, out float d0, out uint i0, out float d1, out uint i1, out float d2) {
+void lowestTwo(uint first, uint count, bool skipInf, uint from, uint stride, out float d0, out uint i0, out float d1, out uint i1, out float d2) {
     d0 = INF;
     d1 = INF;
     d2 = INF;
     i0 = 0xFFFFFFFFu;
     i1 = 0xFFFFFFFFu;
-    for (uint i = lane; i < count; i += SG) {
+    for (uint i = from; i < count; i += stride) {
         const float d = uintBitsToFloat(candD[sg][CAND_AT(first, i)]);
         if (skipInf && d == INF)
             continue;
@@ -626,7 +626,7 @@ bool predictiveCut(bool full, uint n, uint nr, float minD) {
 uint selectSlots(uint k) {
     float myD, nextD, thirdD;
     uint myI, nextI;
-    lowestTwo(0, FULL_SLOTS, false, myD, myI, nextD, nextI, thirdD);
+    lowestTwo(0, FULL_SLOTS, false, lane, SG, myD, myI, nextD, nextI, thirdD);
 
 #if GROUP - 1 <= SG * 2
     float lo, hi;
@@ -709,7 +709,7 @@ uint selectSlots(uint k) {
 bool selectCached(uint first, uint nc, uint k, bool full, uint nr, out uint n) {
     float d0, d1, d2;
     uint i0, i1;
-    lowestTwo(first, nc, true, d0, i0, d1, i1, d2);
+    lowestTwo(first, nc, true, lane, SG, d0, i0, d1, i1, d2);
     uint key0 = d0 != INF ? candidateKey(i0, 0, REGION(first), full) : 0u;
     uint key1 = d1 != INF ? candidateKey(i1, 0, REGION(first), full) : 0u;
     if (d0 == d1 && key1 < key0) {
@@ -1017,6 +1017,70 @@ void saveCenters(uint n, uint side) {
         centers[sg][side * PS_NUM + i] = listK[sg][i];
 }
 
+#if HALF_SELECT
+#define HSG (SG / 2)
+#define HALF_MASK ((1u << HSG) - 1u)
+// The list of the forward side while both sides select at once (see selectSides): distances, then keys.
+#define SIDE_LIST (CHUNK - GROUP * 2)
+
+bool anyLane(bool b) {
+    return subgroupBallot(b) != uvec4(0);
+}
+
+// selectCached for both sides of a step at once, side s in lanes [s * HSG, (s + 1) * HSG) of a 32-lane subgroup over its candidates from candD[s == 0 ? 0 :
+// first1] on, the backward side's list going to listD/K and the forward side's to candD from SIDE_LIST on. The rounds of one side serve both, and the
+// forward side's predictiveCut, before the backward side's matches merge, only stops later. False where a side needs mergeCandidates; n is the matches of the
+// lane's side.
+bool selectSides(uint first1, uint nc0, uint nc1, uint nr, out uint n) {
+    const uint side = lane / HSG;
+    const uint first = side == 0u ? 0u : first1;
+    float d0, d1, d2;
+    uint i0, i1;
+    lowestTwo(first, side == 0u ? nc0 : nc1, true, lane % HSG, HSG, d0, i0, d1, i1, d2);
+    uint key0 = d0 != INF ? candidateKey(i0, 0, first, false) : 0u;
+    uint key1 = d1 != INF ? candidateKey(i1, 0, first, false) : 0u;
+    if (d0 == d1 && key1 < key0) {
+        const uint smaller = key1;
+        key1 = key0;
+        key0 = smaller;
+    }
+    restFirst = side == 1u;
+    float head = d0;
+    uint headKey = d0 == d2 ? 0u : key0;
+    uint pops = 0;
+    n = 0;
+    bool live = true;
+    for (uint round = 0; round < GROUP && anyLane(live); ++round) {
+        const float minD = subgroupClusteredMin(head, HSG);
+        const uint ties = subgroupBallot(head == minD).x >> (side * HSG) & HALF_MASK;
+        uint winners = ties;
+        if (anyLane(bitCount(ties) > 1)) {
+            const uint minK = subgroupClusteredMin(head == minD ? headKey : 0xFFFFFFFFu, HSG);
+            const uint keyed = subgroupBallot(head == minD && headKey == minK).x >> (side * HSG) & HALF_MASK;
+            winners = bitCount(ties) > 1 ? keyed : ties;
+        }
+        live = live && minD != INF && !predictiveCut(false, n, nr, minD);
+        if (live) {
+            if (lane % HSG == uint(findLSB(winners))) {
+                if (side == 0u) {
+                    listD[sg][n] = minD;
+                    listK[sg][n] = headKey;
+                } else {
+                    candD[sg][SIDE_LIST + n] = floatBitsToUint(minD);
+                    candD[sg][SIDE_LIST + GROUP + n] = headKey;
+                }
+                ++pops;
+                head = pops == 1 ? d1 : pops == 2 ? d2 : INF;
+                headKey = pops == 1 && d1 != d2 ? key1 : 0u;
+            }
+            ++n;
+        }
+    }
+    syncSubgroup();
+    return !anyLane(pops > 2 || (pops > 0 && (pops == 1 ? d0 : d1) == d2));
+}
+#endif
+
 #if PS_PAIR
 // Selects the matches of a side whose distances fill candD from `first` on, and merges them into the rest set. Returns the size of the rest set.
 uint predictiveSide(uint side, uint first, uint windows, uint frame, uint nr) {
@@ -1061,6 +1125,32 @@ uint predictiveStep(bool back, bool fwd, uint k, uint nr, out bool deferred) {
     psOffset2 = frameOffset(pc.cur + k);
     predictiveDistances(0, (windows0 + windows1) * PS_SLOTS, frameOffset(pc.cur - k), ivec2(-1));
     syncSubgroup();
+#if HALF_SELECT
+    // Both sides select at once where their candidates leave room for the forward side's list, unless a side needs the general merge (rare).
+    uint n;
+    if (back && windows1 > 0u && (windows0 + windows1) * PS_SLOTS <= SIDE_LIST &&
+        selectSides(windows0 * PS_SLOTS, windows0 * PS_SLOTS, windows1 * PS_SLOTS, nr, n)) {
+        const uint n0 = subgroupBroadcast(n, 0);
+        const uint n1 = subgroupBroadcast(n, HSG);
+        // A frame without matches keeps the centers of the last one that had some, as the CPU implementation does.
+        for (uint i = lane; i < PS_NUM * 2; i += SG) {
+            const uint c = i % PS_NUM;
+            if (c < (i < PS_NUM ? n0 : n1))
+                centers[sg][i] = i < PS_NUM ? listK[sg][c] : candD[sg][SIDE_LIST + GROUP + c];
+        }
+        if (n0 > 0)
+            psCenters = bitfieldInsert(psCenters, min(n0, uint(PS_NUM)), 0, 16);
+        if (n1 > 0)
+            psCenters = bitfieldInsert(psCenters, min(n1, uint(PS_NUM)), 16, 16);
+        nr = mergeRest(nr, n0, pc.cur - k);
+        for (uint i = lane; i < n1; i += SG) {
+            listD[sg][i] = uintBitsToFloat(candD[sg][SIDE_LIST + i]);
+            listK[sg][i] = candD[sg][SIDE_LIST + GROUP + i];
+        }
+        syncSubgroup();
+        return mergeRest(nr, n1, pc.cur + k);
+    }
+#endif
     if (back)
         nr = predictiveSide(0, 0, windows0, pc.cur - k, nr);
     if (windows1 > 0u)

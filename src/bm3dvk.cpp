@@ -60,6 +60,7 @@ constexpr int maxDimension = 65536; // block positions are packed as two 16-bit 
 constexpr int imageTile = 16;
 constexpr int bmSubgroupsPreferred = 4;
 constexpr int bmChunkMax = 2048;
+constexpr int bmHalfSelectMinChunk = 512; // smallest chunk whose plan selects both sides of a predictive step at once (measured)
 // Candidate rows per lane in the blockMatch kernel when searches take several chunks: NY_FULL of the full search is bmItemRows, NY_PS of predictive searches
 // bmPredictiveItemRows for groups larger than bmSmallGroup and bmItemRows otherwise (measured best); both are 1 for search steps of a block or more. In a
 // single chunk itemShape chooses them, and the columns of the full search's items: at most bmItemColsMax, and bmItemCandidatesMax candidates per item.
@@ -209,6 +210,7 @@ struct Gpu {
     bool fp16Math{};
     std::vector<uint32_t> fp16DenormPreserve; // widths of the DenormPreserve modes kernels of half precision input declare
     bool floatAtomics{};
+    bool clusteredOps{};
     bool pinSubgroup{};
     uint32_t subgroupSize{};
     int maxWorkgroup{};
@@ -289,6 +291,7 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
             gpu.fp16DenormPreserve.push_back(t.first);
     gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && (gpu.nvidiaDriver ? props12.shaderDenormPreserveFloat16 == VK_TRUE : !gpu.fp16DenormPreserve.empty());
     gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
+    gpu.clusteredOps = (props11.subgroupSupportedOperations & VK_SUBGROUP_FEATURE_CLUSTERED_BIT) != 0;
     gpu.subgroupSize = gpu.pinSubgroup ? std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize) : props13.maxSubgroupSize;
     // Single lane subgroups would share the elements the filter keeps their Wiener sums in (see statElem in shaders.h).
     if (gpu.subgroupSize < 2)
@@ -650,6 +653,7 @@ struct Plan {
     int psRows{1};
     bool psUnion{};
     bool psPair{};
+    bool halfSelect{};
     int bmChunk{};
     bool bmSingleChunk{};
     bool bmCorrelation{};
@@ -887,6 +891,9 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
                           gpu.maxSharedMemory / pairShared >= gpu.maxSharedMemory / shared;
             if (!plan.psPair)
                 plan.bmWindows /= 2;
+            // The two sides select at once in the halves of a 32-lane subgroup (see selectSides), the forward side's list after its candidates. Plans of
+            // smaller chunks lose by it: their kernels get too few registers for it and spill (measured).
+            plan.halfSelect = plan.psPair && sg == 32 && gpu.clusteredOps && plan.bmChunk >= std::max(p.groupSize * 6, bmHalfSelectMinChunk);
         }
         std::tie(plan.bmFullRows, plan.bmFullCols) =
             itemShape(plan.fullCols, plan.fullRows, 1, p.bmStep, p.blockSize, sg, bmFullLoadCost, plan.bmCorrelation, bmItemRowsMax, bmItemColsMax);
@@ -998,6 +1005,8 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         s += "#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require\n";
     if (gpu.floatAtomics)
         s += "#extension GL_EXT_shader_atomic_float : require\n";
+    if (plan.halfSelect)
+        s += "#extension GL_KHR_shader_subgroup_clustered : require\n";
 
     std::string coef;
     for (int i = 0; i < plan.planes * 4; ++i)
@@ -1048,6 +1057,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"PS_ROWS", std::to_string(plan.psRows)},
         {"PS_UNION", plan.psUnion ? "1" : "0"},
         {"PS_PAIR", plan.psPair ? "1" : "0"},
+        {"HALF_SELECT", plan.halfSelect ? "1" : "0"},
         {"REF_IN_REGS", plan.bmRefInRegs ? "1" : "0"},
         {"WHOLE_ROW_LOADS", gpu.nvidiaDriver ? "0" : "1"},
         {"SSD_CORRELATION", plan.bmCorrelation ? "1" : "0"},
