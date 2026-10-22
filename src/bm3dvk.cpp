@@ -662,6 +662,7 @@ struct Plan {
     int filterGroupsX{};
     int64_t groupBytes{};
     int searchMargin{};
+    int tileMargin{};
     int tileRefs{};
     int tileSpan{};
     bool accTile{};
@@ -934,13 +935,24 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.accTile = tileWorkgroups > 0 && tileSamples >= filterTileGain * span * span &&
                    (tileWorkgroups >= (p.wiener ? filterTileWorkgroups : filterTileWorkgroupsBasic) || tileWorkgroups == gpu.maxSharedMemory / groupShared);
     plan.tileRefs = plan.accTile ? filterTileRefs : 1;
-    plan.tileSpan = plan.accTile ? span : 1;
+    // The basic tile of half precision groups narrows its margin, down to 3/4 of the search's, where that fits another workgroup into an SM: the farthest
+    // matches of its outer reference blocks then go to memory. Single precision groups lose by it, the narrower tile costing them registers (measured).
+    const auto tileSpanOf = [&](int margin) { return (filterTileRefs - 1) * p.blockStep + p.blockSize + margin * 2; };
+    const auto tileBytesOf = [&](int margin) { return int64_t{tileSpanOf(margin)} * tileSpanOf(margin) * static_cast<int64_t>(sizeof(float)); };
+    plan.tileMargin = plan.searchMargin;
+    if (plan.accTile && !p.wiener && elementBytes == 4)
+        for (int m = plan.searchMargin - 1; m * 4 >= plan.searchMargin * 3; --m)
+            if (gpu.maxSharedMemory / (groupShared + tileBytesOf(m)) > tileWorkgroups) {
+                plan.tileMargin = m;
+                break;
+            }
+    plan.tileSpan = plan.accTile ? tileSpanOf(plan.tileMargin) : 1;
 
     // Without the odd stride, blocks of four row pairs of 8-byte elements are permuted to stay free of bank conflicts (see swizzled in shaders.h), where that
     // fits more workgroups into an SM. The tile stays the one chosen for the padded layout, and so does the workgroup size for groups of up to
     // filterPaddedSizedGroup blocks. Larger ones size it for the permuted layout: their single precision z-lines need more registers than NVIDIA leaves the
     // padded layout's larger workgroups (measured).
-    const int64_t workgroupShared = groupShared + (plan.accTile ? tileShared : 0);
+    const int64_t workgroupShared = groupShared + (plan.accTile ? tileBytesOf(plan.tileMargin) : 0);
     const int64_t paddingBytes = plan.groupBytes / plan.blockPadded;
     if (elementBytes == 8 && halfBlock == 4 && !plan.pingpong && !plan.globalGroup &&
         gpu.maxSharedMemory / (workgroupShared - paddingBytes) > gpu.maxSharedMemory / workgroupShared) {
@@ -1049,6 +1061,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"TILE_REFS", std::to_string(plan.tileRefs)},
         {"TILE_SPAN", std::to_string(plan.tileSpan)},
         {"SEARCH_MARGIN", std::to_string(plan.searchMargin)},
+        {"TILE_MARGIN", std::to_string(plan.tileMargin)},
         {"PINGPONG", plan.pingpong ? "1" : "0"},
         // The group size tables follow the block size table (see buildCosTable).
         {"Z_TABLE_BASE", std::to_string(p.blockSize > dct::maxCodeletSize ? p.blockSize * 4 : 0)},

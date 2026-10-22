@@ -1620,10 +1620,14 @@ void accumulatePair(uint z, uint p, uint x, vec2 v) {
     const ivec2 pos = unpackPos(m.x) + ivec2(x, p * 2);
     const uint i = accNum(frame, pos);
 #if ACC_TILE
-    if (frame == pc.firstFrame + pc.cur && groupInTile) {
-        const uint t = uint(pos.y - tileOrigin.y) * TILE_SPAN + uint(pos.x - tileOrigin.x);
+    // A tile narrower than the search (see makePlan) leaves the farthest matches of its outer reference blocks to memory.
+    const uvec2 d = uvec2(pos - tileOrigin);
+    const bool second = p * 2 + 1 < BLOCK;
+    if (frame == pc.firstFrame + pc.cur && groupInTile &&
+        (TILE_MARGIN == SEARCH_MARGIN || (d.x < uint(tileSize.x) && d.y < uint(tileSize.y - int(second))))) {
+        const uint t = d.y * TILE_SPAN + d.x;
         accumulateTile(t, i, v.x);
-        if (p * 2 + 1 < BLOCK)
+        if (second)
             accumulateTile(t + TILE_SPAN, i + WIDTH, v.y);
         return;
     }
@@ -1758,8 +1762,8 @@ void main() {
         const uint row1 = min(row0 + TILE_REFS, pc.refRow0 + pc.refRows);
         const uint col1 = min(col0 + TILE_REFS, REF_COLS);
 #if ACC_TILE
-        tileOrigin = max(refPosition(row0, col0) - SEARCH_MARGIN, ivec2(0));
-        tileSize = min(refPosition(row1 - 1, col1 - 1) + BLOCK + SEARCH_MARGIN, ivec2(WIDTH, HEIGHT)) - tileOrigin;
+        tileOrigin = max(refPosition(row0, col0) - TILE_MARGIN, ivec2(0));
+        tileSize = min(refPosition(row1 - 1, col1 - 1) + BLOCK + TILE_MARGIN, ivec2(WIDTH, HEIGHT)) - tileOrigin;
         for (uint i = gl_LocalInvocationIndex; i < TILE_SPAN * TILE_SPAN; i += WG)
             tileNum[i] = 0;
         SYNC();
