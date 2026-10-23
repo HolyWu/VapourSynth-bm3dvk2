@@ -236,11 +236,16 @@ bool hasDeviceExtension(const Gpu& gpu, std::string_view name) {
     return std::ranges::any_of(extensions, [name](const VkExtensionProperties& e) { return name == e.extensionName; });
 }
 
+// Whether the environment variable `name` is set to anything but empty or 0.
+bool envFlag(const char* name) {
+    const char* value = std::getenv(name);
+    return value && *value && std::string_view{value} != "0";
+}
+
 // Profiling times every dispatch and fill (see KernelTimer) and logs the statistics of every kernel: enabled by the environment variable BM3DVK_PROFILE set to
 // anything but empty or 0.
 bool profilingRequested() {
-    const char* value = std::getenv("BM3DVK_PROFILE");
-    return value && *value && std::string_view{value} != "0";
+    return envFlag("BM3DVK_PROFILE");
 }
 
 Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
@@ -275,7 +280,10 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
         fail("the device lacks subgroup arithmetic, ballot or shuffle operations");
 
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
-    gpu.nvidiaDriver = props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+    // BM3DVK_FALLBACK, set as BM3DVK_PROFILE is, takes the paths of a device without float atomics or half precision math and off the NVIDIA driver, so that
+    // tests can check them on any device.
+    const bool fallback = envFlag("BM3DVK_FALLBACK");
+    gpu.nvidiaDriver = props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY && !fallback;
     // Layered drivers forwarding to llvmpipe (Venus, gfxstream) report their own driver ID but keep its name in the device name.
     gpu.llvmpipeDriver =
         props12.driverID == VK_DRIVER_ID_MESA_LLVMPIPE || std::string_view{props.properties.deviceName}.find("llvmpipe") != std::string_view::npos;
@@ -291,8 +299,9 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     if (!gpu.nvidiaDriver && std::ranges::all_of(tied, [](const auto& t) { return t.second == VK_TRUE; }))
         for (const auto& t : tied)
             gpu.fp16DenormPreserve.push_back(t.first);
-    gpu.fp16Math = features12.shaderFloat16 == VK_TRUE && (gpu.nvidiaDriver ? props12.shaderDenormPreserveFloat16 == VK_TRUE : !gpu.fp16DenormPreserve.empty());
-    gpu.floatAtomics = atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
+    gpu.fp16Math = !fallback && features12.shaderFloat16 == VK_TRUE &&
+                   (gpu.nvidiaDriver ? props12.shaderDenormPreserveFloat16 == VK_TRUE : !gpu.fp16DenormPreserve.empty());
+    gpu.floatAtomics = !fallback && atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
     gpu.clusteredOps = (props11.subgroupSupportedOperations & VK_SUBGROUP_FEATURE_CLUSTERED_BIT) != 0;
     gpu.subgroupSize = gpu.pinSubgroup ? std::clamp(preferredSubgroupSize, props13.minSubgroupSize, props13.maxSubgroupSize) : props13.maxSubgroupSize;
     // Single lane subgroups would share the elements the filter keeps their Wiener sums in (see statElem in shaders.h).
