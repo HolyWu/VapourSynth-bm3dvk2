@@ -950,9 +950,11 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // estimates land in the tile than its flush writes back, and not when it leaves an SM few workgroups where more would run without it. Basic groups of half
     // precision, which take half the shared memory and keep their registers next to a tile, already gain from half as many estimates (measured).
     plan.searchMargin = std::min(p.bmRange / p.bmStep * p.bmStep, std::max(vi.width, vi.height));
-    const int span = (filterTileRefs - 1) * p.blockStep + p.blockSize + plan.searchMargin * 2;
+    const auto tileSpanOf = [&](int margin) { return (filterTileRefs - 1) * p.blockStep + p.blockSize + margin * 2; };
+    const auto tileBytesOf = [&](int margin) { return int64_t{tileSpanOf(margin)} * tileSpanOf(margin) * static_cast<int64_t>(sizeof(float)); };
+    const int span = tileSpanOf(plan.searchMargin);
     const double tileSamples = static_cast<double>(p.groupSize) * p.blockSize * p.blockSize * filterTileRefs * filterTileRefs;
-    const int64_t tileShared = int64_t{span} * span * sizeof(float);
+    const int64_t tileShared = tileBytesOf(plan.searchMargin);
     const int64_t tileWorkgroups = gpu.maxSharedMemory / (groupShared + tileShared);
     const double tileGain = !p.wiener && elementBytes == 4 ? filterTileGain / 2 : filterTileGain;
     plan.accTile = tileWorkgroups > 0 && tileSamples >= tileGain * span * span &&
@@ -961,8 +963,6 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.tileRefs = plan.accTile ? filterTileRefs : p.radius == 0 ? filterSpatialTileRefs : 1;
     // The basic tile of half precision groups narrows its margin, down to 3/4 of the search's, where that fits another workgroup into an SM: the farthest
     // matches of its outer reference blocks then go to memory. Single precision groups lose by it, the narrower tile costing them registers (measured).
-    const auto tileSpanOf = [&](int margin) { return (filterTileRefs - 1) * p.blockStep + p.blockSize + margin * 2; };
-    const auto tileBytesOf = [&](int margin) { return int64_t{tileSpanOf(margin)} * tileSpanOf(margin) * static_cast<int64_t>(sizeof(float)); };
     plan.tileMargin = plan.searchMargin;
     if (plan.accTile && !p.wiener && elementBytes == 4)
         for (int m = plan.searchMargin - 1; m * 4 >= plan.searchMargin * 3; --m)
