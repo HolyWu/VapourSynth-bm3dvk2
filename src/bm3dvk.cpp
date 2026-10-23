@@ -1897,7 +1897,7 @@ private:
     TemporalCursor cursor_;
     // Frames emitted ahead, each for the pending requests that take it or forget it.
     std::map<int, FramePtr> emitted_;
-    // Frames requested and not yet returned, once per request (VapourSynth does not merge external ones); the cursor emits no other frame than n.
+    // Frames requested and not yet returned, once per request (VapourSynth does not merge external ones); besides n, the cursor emits only frames in it.
     std::multiset<int> pending_;
     std::unique_ptr<KernelTimer> timer_;
     // Declared last so that it is destroyed first: freeing the pool drains every submission still using the members above.
