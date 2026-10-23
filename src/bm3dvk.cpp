@@ -309,6 +309,8 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
         fail("the device's subgroups are too small");
     gpu.maxWorkgroup = static_cast<int>(std::bit_floor(std::min<uint64_t>({limits.maxComputeWorkGroupInvocations, limits.maxComputeWorkGroupSize[0],
                                                                            uint64_t{props13.maxComputeWorkgroupSubgroups} * gpu.subgroupSize})));
+    if (gpu.maxWorkgroup < static_cast<int>(gpu.subgroupSize))
+        fail("the device's compute workgroups cannot hold a subgroup");
     gpu.maxSharedMemory = limits.maxComputeSharedMemorySize;
     gpu.maxGroupCountX = static_cast<int>(std::min<uint32_t>(limits.maxComputeWorkGroupCount[0], std::numeric_limits<int>::max()));
     // Working buffers are created at the size they are bound with.
