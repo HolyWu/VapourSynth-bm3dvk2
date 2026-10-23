@@ -921,9 +921,9 @@ uint search(uint offset, bool full, ivec2 refPos, uint k, uint windows, uint nr)
 
 #if RADIUS > 0
 #if PS_UNION
-// Lays out the windows around the numCenters centers of a side (0 unless PS_PAIR), from record rb = side * SIDE_RECORDS on: the windows go to records
-// rb + 1..numCenters. Where their bounding box fits the layout, it is searched as the single window rb; otherwise they move down to records rb.. and are
-// searched one after another. Returns the side's search windows.
+// Lays out the windows around the numCenters centers of a side (0 unless PS_PAIR), from record rb = side * SIDE_RECORDS on: the windows go to records rb +
+// 1..numCenters. Where their bounding box fits the layout, it is searched as the single window rb; otherwise they move down to records rb.. and are searched
+// one after another. Returns the side's search windows.
 uint sideWindows(uint side, uint numCenters, out bool notRect) {
     const uint rb = side * SIDE_RECORDS;
     notRect = false;
@@ -981,9 +981,9 @@ uint predictiveSearch(uint numCenters, uint offset, uint nr) {
 #endif
 
 // Keeps the GROUP - 1 smallest (distance, key) entries of the rest set and the frame list in listD/K, the key of a match being frame * GROUP + its rank in its
-// frame's list: as a frame lists its matches by (distance, position), equal distances order by frame and position like the CPU implementation. Both sets
-// ascend by (distance, key) and hold unique keys, so every element finds its rank directly instead of in selection rounds: its index in its own set plus the
-// elements of the other set preceding it.
+// frame's list: as a frame lists its matches by (distance, position), equal distances order by frame and position like the CPU implementation. Both sets ascend
+// by (distance, key) and hold unique keys, so every element finds its rank directly instead of in selection rounds: its index in its own set plus the elements
+// of the other set preceding it.
 uint mergeRest(uint nr, uint nl, uint frame) {
     const uint total = nr + nl;
     for (uint i = lane; i < total; i += SG) {
@@ -1031,9 +1031,9 @@ bool anyLane(bool b) {
 }
 
 // selectCached for both sides of a step at once, side s in lanes [s * HSG, (s + 1) * HSG) of a 32-lane subgroup over its candidates from candD[s == 0 ? 0 :
-// first1] on, the backward side's list going to listD/K and the forward side's to candD from SIDE_LIST on. The rounds of one side serve both, and the
-// forward side's predictiveCut, before the backward side's matches merge, only stops later. False where a side needs mergeCandidates; n is the matches of the
-// lane's side.
+// first1] on, the backward side's list going to listD/K and the forward side's to candD from SIDE_LIST on. The rounds of one side serve both, and the forward
+// side's predictiveCut, before the backward side's matches merge, only stops later. False where a side needs mergeCandidates; n is the matches of the lane's
+// side.
 bool selectSides(uint first1, uint nc0, uint nc1, uint nr, out uint n) {
     const uint side = lane / HSG;
     const uint first = side == 0u ? 0u : first1;
@@ -1539,9 +1539,9 @@ uint zTableOffset(uint n) {
 
 inline constexpr std::string_view filterTail = R"glsl(
 // The odd stride of 8-byte elements leaves a padding column no pass reads. Gather and aggregate skip it where that saves a pass over a full group; elsewhere
-// their irregular rows cost more in bank conflicts than the skipped elements save (measured). Under a tile, where a block's unpadded elements fill a
-// subgroup, a subgroup takes whole blocks: the member is uniform and an element's place in its block fixed, which spares the index arithmetic of the
-// tile's cheap accumulation (measured faster only there).
+// their irregular rows cost more in bank conflicts than the skipped elements save (measured). Under a tile, where a block's unpadded elements fill a subgroup,
+// a subgroup takes whole blocks: the member is uniform and an element's place in its block fixed, which spares the index arithmetic of the tile's cheap
+// accumulation (measured faster only there).
 #define WARP_BLOCKS (ACC_TILE != 0 && HB * HB * 2 == SG)
 void gather(uint k, float scale) {
 #if WARP_BLOCKS
@@ -1758,8 +1758,7 @@ void accumulatePair(uint z, uint p, uint x, vec2 v) {
     // A tile narrower than the search (see makePlan) leaves the farthest matches of its outer reference blocks to memory.
     const uvec2 d = uvec2(pos - tileOrigin);
     const bool second = p * 2 + 1 < BLOCK;
-    if (frame == pc.firstFrame + pc.cur && groupInTile &&
-        (TILE_MARGIN == SEARCH_MARGIN || (d.x < uint(tileSize.x) && d.y < uint(tileSize.y - int(second))))) {
+    if (frame == pc.firstFrame + pc.cur && groupInTile && (TILE_MARGIN == SEARCH_MARGIN || (d.x < uint(tileSize.x) && d.y < uint(tileSize.y - int(second))))) {
         const uint t = d.y * TILE_SPAN + d.x;
         accumulateTile(t, i, v.x);
         if (second)
