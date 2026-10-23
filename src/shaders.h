@@ -704,6 +704,31 @@ uint selectSlots(uint k) {
     return n;
 }
 #else
+#if SINGLE_CHUNK && (GROUP * 2 <= SG || HALF_SELECT)
+// The cached heads of selectCached and selectSides: the keys of a lane's two smallest pairs, in key order among equal distances.
+void cachedKeys(uint first, bool full, float d0, uint i0, float d1, uint i1, out uint key0, out uint key1) {
+    key0 = d0 != INF ? candidateKey(i0, 0, first, full) : 0u;
+    key1 = d1 != INF ? candidateKey(i1, 0, first, full) : 0u;
+    if (d0 == d1 && key1 < key0) {
+        const uint smaller = key1;
+        key1 = key0;
+        key0 = smaller;
+    }
+}
+
+// Moves a lane's head to its next cached pair, then to its third distance, which takes key 0 as a head tied with it does.
+void popHead(float d1, float d2, uint key1, inout uint pops, inout float head, inout uint headKey) {
+    ++pops;
+    head = pops == 1 ? d1 : pops == 2 ? d2 : INF;
+    headKey = pops == 1 && d1 != d2 ? key1 : 0u;
+}
+
+// Whether a lane selected a head tied with its third distance, which may have preceded an uncached element of that distance.
+bool headTied(uint pops, float d0, float d1, float d2) {
+    return pops > 2 || (pops > 0 && (pops == 1 ? d0 : d1) == d2);
+}
+#endif
+
 #if SINGLE_CHUNK && GROUP * 2 <= SG
 // The rounds of mergeCandidates for a single chunk (na == 0) after a scan without keys: each lane caches its two smallest distances, keyed after the scan, and
 // its third smallest distance, so that the rounds need no refills and leave candD as it is. A cached element tied with the third distance may follow an
@@ -713,13 +738,8 @@ bool selectCached(uint first, uint nc, uint k, bool full, uint nr, out uint n) {
     float d0, d1, d2;
     uint i0, i1;
     lowestTwo(first, nc, true, lane, SG, d0, i0, d1, i1, d2);
-    uint key0 = d0 != INF ? candidateKey(i0, 0, REGION(first), full) : 0u;
-    uint key1 = d1 != INF ? candidateKey(i1, 0, REGION(first), full) : 0u;
-    if (d0 == d1 && key1 < key0) {
-        const uint smaller = key1;
-        key1 = key0;
-        key0 = smaller;
-    }
+    uint key0, key1;
+    cachedKeys(REGION(first), full, d0, i0, d1, i1, key0, key1);
 
 #if GROUP - 1 >= 7
     // A full search sorts the cached pairs as selectSlots does, which pays from k = 7 on (measured), the network costing about as much as 5-6 rounds. Only a
@@ -780,13 +800,11 @@ bool selectCached(uint first, uint nc, uint k, bool full, uint nr, out uint n) {
         if (lane == winner) {
             listD[sg][n] = minD;
             listK[sg][n] = headKey;
-            ++pops;
-            head = pops == 1 ? d1 : pops == 2 ? d2 : INF;
-            headKey = pops == 1 && d1 != d2 ? key1 : 0u;
+            popHead(d1, d2, key1, pops, head, headKey);
         }
     }
     syncSubgroup();
-    if (subgroupBallotBitCount(subgroupBallot(pops > 2 || (pops > 0 && (pops == 1 ? d0 : d1) == d2))) != 0)
+    if (subgroupBallotBitCount(subgroupBallot(headTied(pops, d0, d1, d2))) != 0)
         return false;
     return true;
 }
@@ -1045,13 +1063,8 @@ bool selectSides(uint first1, uint nc0, uint nc1, uint nr, out uint n) {
     float d0, d1, d2;
     uint i0, i1;
     lowestTwo(first, side == 0u ? nc0 : nc1, true, lane % HSG, HSG, d0, i0, d1, i1, d2);
-    uint key0 = d0 != INF ? candidateKey(i0, 0, first, false) : 0u;
-    uint key1 = d1 != INF ? candidateKey(i1, 0, first, false) : 0u;
-    if (d0 == d1 && key1 < key0) {
-        const uint smaller = key1;
-        key1 = key0;
-        key0 = smaller;
-    }
+    uint key0, key1;
+    cachedKeys(first, false, d0, i0, d1, i1, key0, key1);
     restFirst = side == 1u;
     float head = d0;
     uint headKey = d0 == d2 ? 0u : key0;
@@ -1077,15 +1090,13 @@ bool selectSides(uint first1, uint nc0, uint nc1, uint nr, out uint n) {
                     candD[sg][SIDE_LIST + n] = floatBitsToUint(minD);
                     candD[sg][SIDE_LIST + GROUP + n] = headKey;
                 }
-                ++pops;
-                head = pops == 1 ? d1 : pops == 2 ? d2 : INF;
-                headKey = pops == 1 && d1 != d2 ? key1 : 0u;
+                popHead(d1, d2, key1, pops, head, headKey);
             }
             ++n;
         }
     }
     syncSubgroup();
-    return !anyLane(pops > 2 || (pops > 0 && (pops == 1 ? d0 : d1) == d2));
+    return !anyLane(headTied(pops, d0, d1, d2));
 }
 
 // Entry j of set s, as mergeRest keys them: the rest set (s = 0), the backward side's list of frame f0 (1) or the forward side's of frame f1 (2).
