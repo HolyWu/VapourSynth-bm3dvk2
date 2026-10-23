@@ -1530,8 +1530,6 @@ public:
         std::vector<VkQueueFamilyProperties2> familyProps(families, {.sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2});
         vk_->vkGetPhysicalDeviceQueueFamilyProperties2(gpu.handles.physicalDevice, &families, familyProps.data());
         const uint32_t validBits = familyProps[gpu.handles.computeQueueFamily].queueFamilyProperties.timestampValidBits;
-        if (validBits == 0)
-            fail("the compute queue does not support timestamps, unset BM3DVK_PROFILE");
         timestampMask_ = validBits >= 64 ? ~uint64_t{} : (uint64_t{1} << validBits) - 1;
         const VkQueryPoolCreateInfo info{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = capacity};
         if (vk_->vkCreateQueryPool(device_, &info, nullptr, &pool_) != VK_SUCCESS)
