@@ -980,6 +980,20 @@ uint predictiveSearch(uint numCenters, uint offset, uint nr) {
 }
 #endif
 
+// Moves the first GROUP - 1 of the `total` merged entries from STAGE to the rest set. Returns the size of the rest set.
+uint commitRest(uint total) {
+    const uint n = min(total, uint(GROUP - 1));
+    syncSubgroup();
+    for (uint i = lane; i < n; i += SG) {
+        restD[sg][i] = uintBitsToFloat(STAGE(i));
+        restC[sg][i] = STAGE(GROUP + i);
+        restP[sg][i] = STAGE(GROUP * 2 + i);
+        restF[sg][i] = STAGE(GROUP * 3 + i);
+    }
+    syncSubgroup();
+    return n;
+}
+
 // Keeps the GROUP - 1 smallest (distance, key) entries of the rest set and the frame list in listD/K, the key of a match being frame * GROUP + its rank in its
 // frame's list: as a frame lists its matches by (distance, position), equal distances order by frame and position like the CPU implementation. Both sets ascend
 // by (distance, key) and hold unique keys, so every element finds its rank directly instead of in selection rounds: its index in its own set plus the elements
@@ -1002,16 +1016,7 @@ uint mergeRest(uint nr, uint nl, uint frame) {
             STAGE(GROUP * 3 + rank) = i < nr ? restF[sg][i] : frame;
         }
     }
-    const uint n = min(total, uint(GROUP - 1));
-    syncSubgroup();
-    for (uint i = lane; i < n; i += SG) {
-        restD[sg][i] = uintBitsToFloat(STAGE(i));
-        restC[sg][i] = STAGE(GROUP + i);
-        restP[sg][i] = STAGE(GROUP * 2 + i);
-        restF[sg][i] = STAGE(GROUP * 3 + i);
-    }
-    syncSubgroup();
-    return n;
+    return commitRest(total);
 }
 
 // Keeps the best positions of a frame as the search centers of the next frame of its side, synchronized by the mergeRest that always follows.
@@ -1119,16 +1124,7 @@ uint mergeRestSides(uint nr, uint n0, uint f0, uint n1, uint f1) {
             STAGE(GROUP * 3 + rank) = s == 0u ? restF[sg][j] : s == 1u ? f0 : f1;
         }
     }
-    const uint n = min(total, uint(GROUP - 1));
-    syncSubgroup();
-    for (uint i = lane; i < n; i += SG) {
-        restD[sg][i] = uintBitsToFloat(STAGE(i));
-        restC[sg][i] = STAGE(GROUP + i);
-        restP[sg][i] = STAGE(GROUP * 2 + i);
-        restF[sg][i] = STAGE(GROUP * 3 + i);
-    }
-    syncSubgroup();
-    return n;
+    return commitRest(total);
 }
 #endif
 
