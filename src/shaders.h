@@ -290,6 +290,9 @@ uint psOffset2;
 // selection writes its list directly.
 #if SINGLE_CHUNK
 #define STAGE(i) candD[sg][i]
+#if RADIUS > 0 && CHUNK < 4 * GROUP || PS_PAIR && PS_SLOTS < 4 * GROUP || HALF_SELECT && CHUNK < 6 * GROUP
+#error "the staging of merge results overlaps live candidates"
+#endif
 #else
 shared uint stage[NSG][(RADIUS > 0 ? 4 : 2) * GROUP];
 #define STAGE(i) stage[sg][i]
