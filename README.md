@@ -66,6 +66,11 @@ Values are basic / final.
 `bm_step` and `ps_step` default to 1. `th_mse` defaults to `sigma[0] * 80 + 400` / `sigma[0] * 10 + 200`, or `sigma[0] * 150 + 1000` / `sigma[0] * 40 + 400` for `"vn"`.
 
 
+## Requirements
+
+Besides the Vulkan 1.4 device that VapourSynth requires, the device must support subgroup arithmetic, ballot and shuffle operations, and must be able to pin the subgroup size of compute shaders (`requiredSubgroupSizeStages` including compute) unless its subgroup size is fixed or it is an Apple GPU.
+
+
 ## Installation
 
 ```
