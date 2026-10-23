@@ -904,9 +904,10 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
                           gpu.maxSharedMemory / pairShared >= gpu.maxSharedMemory / shared;
             if (!plan.psPair)
                 plan.bmWindows /= 2;
-            // The two sides select at once in the halves of a 32-lane subgroup (see selectSides), the forward side's list after its candidates. Plans of
-            // smaller chunks lose by it: their kernels get too few registers for it and spill (measured).
-            plan.halfSelect = plan.psPair && sg == 32 && gpu.clusteredOps && plan.bmChunk >= std::max(p.groupSize * 6, bmHalfSelectMinChunk);
+            // The two sides select at once in the halves of a 32-lane subgroup (see selectSides), the forward side's list after the candidates, where one
+            // window per side leaves room for it. Plans of smaller chunks lose by it: their kernels get too few registers for it and spill (measured).
+            plan.halfSelect = plan.psPair && sg == 32 && gpu.clusteredOps && plan.bmChunk >= std::max(p.groupSize * 6, bmHalfSelectMinChunk) &&
+                              2 * psSlots <= plan.bmChunk - 2 * p.groupSize;
         }
         std::tie(plan.bmFullRows, plan.bmFullCols) =
             itemShape(plan.fullCols, plan.fullRows, 1, p.bmStep, p.blockSize, sg, bmFullLoadCost, plan.bmCorrelation, bmItemRowsMax, bmItemColsMax);
