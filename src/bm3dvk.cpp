@@ -211,6 +211,7 @@ struct Gpu {
     bool llvmpipeDriver{};
     bool fp16Math{};
     std::vector<uint32_t> fp16DenormPreserve; // widths of the DenormPreserve modes kernels of half precision input declare
+    std::vector<uint32_t> fp16RoundingRTE; // widths of the RoundingModeRTE modes kernels of half precision input declare
     bool floatAtomics{};
     bool clusteredOps{};
     bool pinSubgroup{};
@@ -291,14 +292,25 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     // DenormPreserve for 16-bit floats, and for the widths the driver ties to them: 64-bit (AMD) or all (Mali on panvk). A device that cannot preserve them
     // filters in single precision. NVIDIA keeps them without the mode, its default is as close to the CPU implementation, and the mode costs its filter about
     // 3% (RTX 4060 Ti, RGBH final vn).
-    std::vector<std::pair<uint32_t, VkBool32>> tied{{16, props12.shaderDenormPreserveFloat16}};
-    if (props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE)
-        tied.push_back({32, props12.shaderDenormPreserveFloat32});
-    if (props12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL)
-        tied.push_back({64, props12.shaderDenormPreserveFloat64});
-    if (!gpu.nvidiaDriver && std::ranges::all_of(tied, [](const auto& t) { return t.second == VK_TRUE; }))
-        for (const auto& t : tied)
-            gpu.fp16DenormPreserve.push_back(t.first);
+    const auto tiedWidths = [](VkShaderFloatControlsIndependence independence, VkBool32 f16, VkBool32 f32, VkBool32 f64) {
+        std::vector<std::pair<uint32_t, VkBool32>> tied{{16, f16}};
+        if (independence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE)
+            tied.push_back({32, f32});
+        if (independence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL)
+            tied.push_back({64, f64});
+        std::vector<uint32_t> widths;
+        if (std::ranges::all_of(tied, [](const auto& t) { return t.second == VK_TRUE; }))
+            for (const auto& t : tied)
+                widths.push_back(t.first);
+        return widths;
+    };
+    if (!gpu.nvidiaDriver)
+        gpu.fp16DenormPreserve = tiedWidths(props12.denormBehaviorIndependence, props12.shaderDenormPreserveFloat16, props12.shaderDenormPreserveFloat32,
+                                            props12.shaderDenormPreserveFloat64);
+    // Half precision results round to nearest even, as the CPU implementation's are quantized, where the device can declare it: its default rounding is
+    // implementation-defined.
+    gpu.fp16RoundingRTE = tiedWidths(props12.roundingModeIndependence, props12.shaderRoundingModeRTEFloat16, props12.shaderRoundingModeRTEFloat32,
+                                     props12.shaderRoundingModeRTEFloat64);
     gpu.fp16Math = !fallback && features12.shaderFloat16 == VK_TRUE &&
                    (gpu.nvidiaDriver ? props12.shaderDenormPreserveFloat16 == VK_TRUE : !gpu.fp16DenormPreserve.empty());
     gpu.floatAtomics = !fallback && atomicFloat.shaderBufferFloat32AtomicAdd == VK_TRUE;
@@ -1248,8 +1260,10 @@ struct FloatMode {
 
 constexpr uint32_t modeDenormPreserve = 4459;
 constexpr uint32_t modeSignedZeroInfNanPreserve = 4461;
+constexpr uint32_t modeRoundingModeRTE = 4462;
 constexpr uint32_t capabilityDenormPreserve = 4464;
 constexpr uint32_t capabilitySignedZeroInfNanPreserve = 4466;
+constexpr uint32_t capabilityRoundingModeRTE = 4467;
 
 struct KernelSpec {
     const char* name{};
@@ -1751,9 +1765,12 @@ public:
         // neither occurs (AMDVLK marks float operations nnan). Half precision input keeps its subnormal samples through the loads and stores even where the
         // math is single precision.
         std::vector<FloatMode> modes{{modeSignedZeroInfNanPreserve, capabilitySignedZeroInfNanPreserve, 32}};
-        if (plan_.fp16Input)
+        if (plan_.fp16Input) {
             for (const uint32_t width : gpu_.fp16DenormPreserve)
                 modes.push_back({modeDenormPreserve, capabilityDenormPreserve, width});
+            for (const uint32_t width : gpu_.fp16RoundingRTE)
+                modes.push_back({modeRoundingModeRTE, capabilityRoundingModeRTE, width});
+        }
         const std::string preamble = buildPreamble(params_, plan_, gpu_);
         const auto kernelSource = [&preamble](std::string_view kernel) { return preamble + std::string{shader::common} + std::string{kernel}; };
         const auto planes = static_cast<uint32_t>(plan_.planes);
