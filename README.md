@@ -17,7 +17,7 @@ bm3dvk2.BM3D(vnode clip[, vnode ref=None, str profile="fast", float[] sigma=[10,
 
 - profile: Preset of the defaults below: `"fast"`, `"lc"` (low complexity), `"np"` (normal), `"high"` or `"vn"` (very noisy).
 
-- sigma: Strength of denoising per plane, in 8 bit scale, valid range [0, +inf). Unassigned planes take the value of the previous one. Planes of 0 are left unfiltered, and when it is 0 for every plane, the input is returned unprocessed.
+- sigma: Strength of denoising per plane (the opponent color planes for RGB input), in 8 bit scale, valid range [0, +inf). Unassigned planes take the value of the previous one. Planes of 0 are left unfiltered, and when it is 0 for every plane, the input is returned unprocessed.
 
 - radius: Temporal radius, valid range [0, 16]. 0 denoises spatially (BM3D), greater values denoise temporally over `radius * 2 + 1` frames (V-BM3D). Defaults to the radius of the profile, and the defaults of the other parameters follow the selected mode.
 
