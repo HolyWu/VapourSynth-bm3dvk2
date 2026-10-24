@@ -1140,14 +1140,19 @@ uint mergeRestSides(uint nr, uint n0, uint f0, uint n1, uint f1) {
 #endif
 
 #if PS_PAIR
+// Counts the centers a side saved from its n matches, keeping the count of the last frame that had some.
+void countCenters(uint n, uint side) {
+    if (n > 0)
+        psCenters = bitfieldInsert(psCenters, min(n, uint(PS_NUM)), int(side) * 16, 16);
+}
+
 // Selects the matches of a side whose distances fill candD from `first` on, and merges them into the rest set. Returns the size of the rest set.
 uint predictiveSide(uint side, uint first, uint windows, uint frame, uint nr) {
     restFirst = side == 1u;
     const uint nl = mergeCandidates(0, windows * PS_SLOTS, GROUP, first, false, nr);
     // A frame without matches keeps the centers of the last one that had some, as the CPU implementation does.
     saveCenters(nl, side);
-    if (nl > 0)
-        psCenters = bitfieldInsert(psCenters, min(nl, uint(PS_NUM)), int(side) * 16, 16);
+    countCenters(nl, side);
     return mergeRest(nr, nl, frame);
 }
 
@@ -1196,10 +1201,8 @@ uint predictiveStep(bool back, bool fwd, uint k, uint nr, out bool deferred) {
             if (c < (i < PS_NUM ? n0 : n1))
                 centers[sg][i] = i < PS_NUM ? listK[sg][c] : candD[sg][SIDE_LIST + GROUP + c];
         }
-        if (n0 > 0)
-            psCenters = bitfieldInsert(psCenters, min(n0, uint(PS_NUM)), 0, 16);
-        if (n1 > 0)
-            psCenters = bitfieldInsert(psCenters, min(n1, uint(PS_NUM)), 16, 16);
+        countCenters(n0, 0);
+        countCenters(n1, 1);
         return mergeRestSides(nr, n0, pc.cur - k, n1, pc.cur + k);
     }
 #endif
