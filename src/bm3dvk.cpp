@@ -868,11 +868,11 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     plan.bmRefInRegs = gpu.nvidiaDriver && p.blockSize <= bmRefInRegsMax && (p.radius > 0 || plan.fullCols > sg);
     // Without matching (NO_MATCHING) the kernel declares no search arrays. The limit includes padding, and a driver laying the arrays out in another order may
     // pad each vec4 one (the search windows and a shared reference block) by up to 12 bytes.
-    const auto bmShared = [&](int subgroups, int64_t chunk, bool singleChunk) {
+    const auto bmShared = [&](int windows, int subgroups, int64_t chunk, bool singleChunk) {
         if (plan.noMatching)
             return int64_t{0};
         const int64_t perSubgroup = (plan.bmRefInRegs ? 0 : int64_t{p.blockSize} * divCeil(p.blockSize, 4) * 4 * sizeof(float)) +
-                                    int64_t{plan.bmWindows} * 4 * sizeof(uint32_t) + chunk * sizeof(uint32_t) +
+                                    int64_t{windows} * 4 * sizeof(uint32_t) + chunk * sizeof(uint32_t) +
                                     list * (plan.bmSlotKeys && singleChunk ? 1 : 2) + (singleChunk ? 0 : list * (p.radius > 0 ? 4 : 2)) +
                                     (p.radius > 0 ? list * 4 + int64_t{p.psNum} * 2 * sizeof(uint32_t) : 0);
         return perSubgroup * subgroups + (plan.bmRefInRegs ? 1 : 2) * 12;
@@ -888,20 +888,20 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     // llvmpipe runs the subgroups of a workgroup as coroutines that every barrier suspends, subgroup ones too, and ends the workgroup once one of them returns:
     // a subgroup whose search takes more subgroup barriers than another one's would stop halfway.
     plan.bmSubgroups = gpu.llvmpipeDriver ? 1 : std::min(bmSubgroupsPreferred, gpu.maxWorkgroup / sg);
-    plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
+    plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(plan.bmWindows, 1, exactCandidates, true) <= gpu.maxSharedMemory;
     // Slot keys need a single chunk: where only the padding keeps the search from fitting one, the general merge takes it unpadded.
     if (!plan.bmSingleChunk && plan.fullPitch > plan.fullCols) {
         plan.bmSlotKeys = false;
         plan.fullPitch = plan.fullCols;
         exactCandidates = exactCandidatesOf(plan.psCols, plan.psRows);
-        plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(1, exactCandidates, true) <= gpu.maxSharedMemory;
+        plan.bmSingleChunk = exactCandidates <= bmChunkMax && bmShared(plan.bmWindows, 1, exactCandidates, true) <= gpu.maxSharedMemory;
     }
     // A search in several chunks takes the general merge.
     plan.bmSlotKeys = plan.bmSlotKeys && plan.bmSingleChunk;
     plan.fullRowMajor = plan.bmSlotKeys || laneSpacing(plan.fullPitch) > 2;
     if (plan.bmSingleChunk) {
         plan.bmChunk = static_cast<int>(exactCandidates);
-        while (bmShared(plan.bmSubgroups, plan.bmChunk, true) > gpu.maxSharedMemory)
+        while (bmShared(plan.bmWindows, plan.bmSubgroups, plan.bmChunk, true) > gpu.maxSharedMemory)
             --plan.bmSubgroups;
         // The backward and forward predictive searches of a frame distance run in one pass where the chunk holds both, unless the records of the second side
         // cost an SM a workgroup or the workgroup a subgroup. The rest set merge of the first side stages in the chunk's first 4 * GROUP words, which must not
@@ -909,13 +909,12 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         if (p.radius > 0 && !plan.noMatching) {
             const int64_t psSlots = int64_t{plan.psCols} * plan.psRows;
             const int sideWindows = plan.psUnion ? 1 : p.psNum;
-            const int64_t shared = bmShared(plan.bmSubgroups, plan.bmChunk, true);
-            plan.bmWindows *= 2;
-            const int64_t pairShared = bmShared(plan.bmSubgroups, plan.bmChunk, true);
+            const int64_t shared = bmShared(plan.bmWindows, plan.bmSubgroups, plan.bmChunk, true);
+            const int64_t pairShared = bmShared(plan.bmWindows * 2, plan.bmSubgroups, plan.bmChunk, true);
             plan.psPair = psSlots >= int64_t{p.groupSize} * 4 && 2 * sideWindows * psSlots <= exactCandidates && pairShared <= gpu.maxSharedMemory &&
                           gpu.maxSharedMemory / pairShared >= gpu.maxSharedMemory / shared;
-            if (!plan.psPair)
-                plan.bmWindows /= 2;
+            if (plan.psPair)
+                plan.bmWindows *= 2;
             // The two sides select at once in the halves of a 32-lane subgroup (see selectSides), the forward side's list after the candidates, where one
             // window per side leaves room for it. Plans of smaller chunks lose by it: their kernels get too few registers for it and spill (measured).
             plan.halfSelect = plan.psPair && sg == 32 && gpu.clusteredOps && plan.bmChunk >= std::max(p.groupSize * 6, bmHalfSelectMinChunk) &&
@@ -932,7 +931,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         // Chunks hold whole items of either search.
         static_assert(bmItemRows % bmPredictiveItemRows == 0 && bmChunkMax % bmItemRows == 0);
         plan.bmChunk = divCeil(static_cast<int>(std::min<int64_t>(maxCandidates, bmChunkMax)), bmItemRows) * bmItemRows;
-        while (bmShared(plan.bmSubgroups, plan.bmChunk, false) > gpu.maxSharedMemory) {
+        while (bmShared(plan.bmWindows, plan.bmSubgroups, plan.bmChunk, false) > gpu.maxSharedMemory) {
             if (plan.bmSubgroups > 1)
                 --plan.bmSubgroups;
             else if (plan.bmChunk > bmItemRows)
@@ -941,7 +940,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
                 fail("block matching does not fit into the device's shared memory");
         }
     }
-    plan.bmShared = bmShared(plan.bmSubgroups, plan.bmChunk, plan.bmSingleChunk);
+    plan.bmShared = bmShared(plan.bmWindows, plan.bmSubgroups, plan.bmChunk, plan.bmSingleChunk);
 
     // Mirrors the shared arrays of the filter kernel. A block row holds 2 * halfBlock elements; for 8-byte elements an odd stride puts the rows a pass reads at
     // once into distinct banks, while 4-byte elements fare better with rows aligned for 16-byte loads (measured).
