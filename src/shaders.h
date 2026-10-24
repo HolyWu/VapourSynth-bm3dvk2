@@ -1030,8 +1030,8 @@ uint mergeRest(uint nr, uint nl, uint frame) {
         if (rank < GROUP - 1) {
             STAGE(rank) = floatBitsToUint(d);
             STAGE(GROUP + rank) = c;
-            STAGE(GROUP * 2 + rank) = i < nr ? restP[sg][i] : listK[sg][i - nr];
-            STAGE(GROUP * 3 + rank) = i < nr ? restF[sg][i] : frame;
+            STAGE(GROUP * 2 + rank) = fromRest ? restP[sg][i] : listK[sg][i - nr];
+            STAGE(GROUP * 3 + rank) = fromRest ? restF[sg][i] : frame;
         }
     }
     return commitRest(total);
