@@ -12,7 +12,15 @@ incdir = include_directories(
     run_command(py, '-c', 'import vapoursynth as vs; print(vs.get_include())', check: true).stdout().strip(),
 )
 
-add_project_arguments('-D_CRT_SECURE_NO_WARNINGS', '-DVS_USE_API_43', language: 'cpp')
+version = meson.project_version().split('.')
+
+add_project_arguments(
+    '-DBM3DVK_VERSION_MAJOR=@0@'.format(version[0].to_int()),
+    '-DBM3DVK_VERSION_MINOR=@0@'.format(version.get(1, '0').to_int()),
+    '-D_CRT_SECURE_NO_WARNINGS',
+    '-DVS_USE_API_43',
+    language: 'cpp',
+)
 
 shared_module('bm3dvk2',
     files('src/bm3dvk.cpp'),
