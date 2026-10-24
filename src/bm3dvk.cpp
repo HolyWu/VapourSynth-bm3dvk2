@@ -1740,12 +1740,15 @@ struct Step {
 
 // Temporal filtering scatters the estimates of reference frame m into frames m - radius .. m + radius. Accumulators of those frames live in a ring, so each
 // source frame is converted once and each frame is retired once all of its reference frames have been processed, emitted then if it is requested; at the end of
-// the clip, frames past the request wait for their own. getFrame runs fmUnordered, which serializes every access to this state.
+// the clip, frames past the request wait for their own. A backward cursor mirrors all of this, its frames counting down. getFrame runs fmUnordered, which
+// serializes every access to this state.
 struct TemporalCursor {
     bool valid{};
+    bool backward{};
+    bool steppedBack{};
     int nextRef{};
-    int retiredUpTo{};
-    int convertedUpTo{};
+    int nextRetire{};
+    int nextConvert{};
 };
 
 class Filter {
@@ -1890,7 +1893,7 @@ private:
     void zeroAcc(const Recorder& rec, const WorkBuffers& work, int firstSlot, int slots) const;
     OutFramePtr newFrame(const VSFrame* propSrc, VSCore* core) const;
     bool canContinue(int n) const;
-    TemporalCursor restart(const Recorder& rec, int n) const;
+    TemporalCursor restart(const Recorder& rec, int n, bool backward) const;
 
     void endRequest(int n) noexcept {
         if (const auto it = pending_.find(n); it != pending_.end())
@@ -2067,16 +2070,24 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
 }
 
 bool Filter::canContinue(int n) const {
-    return cursor_.valid && n >= cursor_.retiredUpTo && cursor_.nextRef >= n - params_.radius;
+    const int dir = cursor_.backward ? -1 : 1;
+    return cursor_.valid && dir * n >= dir * cursor_.nextRetire && dir * (cursor_.nextRef - n) >= -params_.radius;
 }
 
-// Restarts the ring so that frame n is the first complete one; only frame 0 needs no reference frames before it.
-TemporalCursor Filter::restart(const Recorder& rec, int n) const {
-    const int first = frameSpan(n, params_.radius).first;
-    const int firstComplete = first == 0 ? 0 : first + params_.radius;
-    zeroAcc(rec, persistent_, 0, plan_.slots);
-    // The first step reads window frames from frameSpan(first, radius) on.
-    return {.valid = true, .nextRef = first, .retiredUpTo = firstComplete, .convertedUpTo = frameSpan(first, params_.radius).first};
+// Restarts the ring so that frame n is the first complete one; only the clip's first frame in the cursor's direction needs no reference frames before it.
+TemporalCursor Filter::restart(const Recorder& rec, int n, bool backward) const {
+    const auto edge = [&](int f) {
+        const auto [lo, hi] = frameSpan(f, params_.radius);
+        return backward ? hi : lo;
+    };
+    const int first = edge(n);
+    const int clipStart = backward ? vi_.numFrames - 1 : 0;
+    const int firstComplete = first == clipStart ? clipStart : first + (backward ? -params_.radius : params_.radius);
+    // A backward cursor clears each slot as its frame comes in instead.
+    if (!backward)
+        zeroAcc(rec, persistent_, 0, plan_.slots);
+    // The first step reads window frames from edge(first) on.
+    return {.valid = true, .backward = backward, .nextRef = first, .nextRetire = firstComplete, .nextConvert = edge(first)};
 }
 
 FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
@@ -2097,30 +2108,42 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
     rec.barrier();
-    // The cursor is committed only once the submission is made, so a failure leaves a restart for the next call.
-    TemporalCursor cursor = canContinue(n) ? cursor_ : restart(rec, n);
+    // The cursor is committed only once the submission is made, so a failure leaves a restart for the next call. A request for the frame just before the one a
+    // forward cursor served last steps back; the second such step in a row restarts backward, as a previewer stepping back requests.
+    const bool stepBack = cursor_.valid && !cursor_.backward && n == cursor_.nextRetire - 2;
+    TemporalCursor cursor = canContinue(n) ? cursor_ : restart(rec, n, stepBack && cursor_.steppedBack);
+    cursor.steppedBack = stepBack;
     cursor_.valid = false;
+    const int dir = cursor.backward ? -1 : 1;
+    const int lastRef = cursor.backward ? 0 : last;
 
     FramePtr result;
     std::map<int, FramePtr> ahead;
-    while (cursor.retiredUpTo <= n) {
+    while (dir * cursor.nextRetire <= dir * n) {
         const int m = cursor.nextRef;
-        if (m <= last) {
-            ++cursor.nextRef;
+        if (dir * m <= dir * lastRef) {
+            cursor.nextRef += dir;
             const auto [firstFrame, lastFrame] = frameSpan(m, radius);
-            for (; cursor.convertedUpTo <= lastFrame; ++cursor.convertedUpTo)
-                recordConvert(rec, ctx, persistent_, sources, cursor.convertedUpTo);
+            const int newest = cursor.backward ? firstFrame : lastFrame;
+            // After a backward restart, frames past the first complete one take estimates and are never retired, so slots are cleared on the way in. The fills
+            // go ahead of the converts: one timed right after a dispatch can measure a negative time.
+            if (cursor.backward)
+                for (int f = cursor.nextConvert; f >= newest; --f)
+                    zeroAcc(rec, persistent_, f % plan_.slots, 1);
+            for (; dir * cursor.nextConvert <= dir * newest; cursor.nextConvert += dir)
+                recordConvert(rec, ctx, persistent_, sources, cursor.nextConvert);
             rec.barrier();
 
-            // Frames below retiredUpTo are retired, or after a restart lack earlier reference frames.
+            // Frames below nextRetire are retired, or after a forward restart lack earlier reference frames.
             recordStep(rec, persistent_, {.firstFrame = firstFrame, .numFrames = lastFrame - firstFrame + 1, .cur = m - firstFrame,
-                                          .activeLo = std::max(firstFrame, cursor.retiredUpTo)});
+                                          .activeLo = cursor.backward ? firstFrame : std::max(firstFrame, cursor.nextRetire)});
         }
 
         // A frame no request waits for, or one already emitted ahead for its requests, is only cleared from the ring. Once the last reference frame is in, the
-        // frames past n stay complete in the ring for their own requests.
-        for (const int retireHi = m >= last ? n : m - radius; cursor.retiredUpTo <= retireHi; ++cursor.retiredUpTo) {
-            const int f = cursor.retiredUpTo;
+        // frames past n stay complete in the ring for their own requests. Backward, the bound is capped past the last frame to avoid overflow near INT_MAX.
+        const int retireEnd = dir * m >= dir * lastRef ? n : cursor.backward ? m + std::min(radius, last + 1 - m) : m - radius;
+        for (; dir * cursor.nextRetire <= dir * retireEnd; cursor.nextRetire += dir) {
+            const int f = cursor.nextRetire;
             if (f == n || (pending_.contains(f) && !emitted_.contains(f))) {
                 OutFramePtr dst = newFrame(sources.src[f - sources.lo].get(), core);
                 recordNormalize(rec, ctx, persistent_, dst.get(), f);
@@ -2130,8 +2153,10 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
                 else
                     ahead.emplace(f, std::move(dst));
             }
-            zeroAcc(rec, persistent_, f % plan_.slots, 1);
-            rec.barrier();
+            if (!cursor.backward) {
+                zeroAcc(rec, persistent_, f % plan_.slots, 1);
+                rec.barrier();
+            }
         }
     }
     if (shared)
