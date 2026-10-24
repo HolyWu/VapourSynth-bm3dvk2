@@ -579,7 +579,8 @@ int intArg(const ArgReader& args, const char* key, int fallback, IntRange range)
     if (!v)
         return fallback;
     if (*v < range.lo || *v > range.hi)
-        fail("\""s + key + "\" must be an integer in [" + std::to_string(range.lo) + ", " + std::to_string(range.hi) + "]");
+        fail("\""s + key + "\" must be an integer in [" + std::to_string(range.lo) + ", " +
+             (range.hi == std::numeric_limits<int>::max() ? "+inf)"s : std::to_string(range.hi) + "]"));
     return *v;
 }
 
