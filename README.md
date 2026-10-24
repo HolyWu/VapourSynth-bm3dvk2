@@ -25,7 +25,7 @@ bm3dvk2.BM3D(vnode clip[, vnode ref=None, str profile="fast", float[] sigma=[10,
 
 - block_step: Step between reference blocks, valid range [1, block_size].
 
-- group_size: Maximum number of blocks in a group, valid range [1, 256].
+- group_size: Maximum number of blocks in a group, valid range [1, 256]. 1 disables block matching: each group holds only its reference block.
 
 - bm_range: Radius of the block-matching search window, valid range [1, +inf).
 
@@ -37,7 +37,7 @@ bm3dvk2.BM3D(vnode clip[, vnode ref=None, str profile="fast", float[] sigma=[10,
 
 - ps_step: Step between predictive search positions, valid range [1, ps_range]. Temporal only.
 
-- th_mse: Threshold of mean square error for block-matching, valid range [0, +inf). Defaults depend on the profile and `sigma[0]`. With `block_size` above 8, block distances carry a rounding error that grows with the square of the sample range, so for content far outside [0, 1] and a small `th_mse`, identical blocks may go unmatched. Even within [0, 1], samples quantized from 8-bit sources give many blocks exactly equal distances, which rounding that differs from the CPU implementation orders differently, so basic estimates can differ from it locally by up to a few 1e-2, as much as the CPU implementation's output changes when its input changes by one ULP. Final estimates whose `ref` is strongly smoothed (e.g. a basic estimate of `sigma` 100 or more, or of a large `hard_thr`) tie the same way and can differ as much.
+- th_mse: Threshold of mean square error for block-matching, valid range [0, +inf). 0 disables block matching as `group_size=1` does, rather than matching only identical blocks. Defaults depend on the profile and `sigma[0]`. With `block_size` above 8, block distances carry a rounding error that grows with the square of the sample range, so for content far outside [0, 1] and a small `th_mse`, identical blocks may go unmatched. Even within [0, 1], samples quantized from 8-bit sources give many blocks exactly equal distances, which rounding that differs from the CPU implementation orders differently, so basic estimates can differ from it locally by up to a few 1e-2, as much as the CPU implementation's output changes when its input changes by one ULP. Final estimates whose `ref` is strongly smoothed (e.g. a basic estimate of `sigma` 100 or more, or of a large `hard_thr`) tie the same way and can differ as much.
 
 - hard_thr: Threshold of hard-thresholding, valid range (0, +inf). Basic estimate only.
 
