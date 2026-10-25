@@ -2138,9 +2138,11 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
             const auto [firstFrame, lastFrame] = frameSpan(m, radius);
             const int newest = cursor.backward ? firstFrame : lastFrame;
             // Slots are cleared as their frames come in, since after a backward restart frames past the first complete one take estimates and are never
-            // retired. The fills go ahead of the converts: one timed right after a dispatch can measure a negative time.
+            // retired; a restart's frames before its first complete one are never normalized and stay uncleared. The fills go ahead of the converts: one
+            // timed right after a dispatch can measure a negative time.
             for (int f = cursor.nextConvert; dir * f <= dir * newest; f += dir)
-                zeroAcc(rec, persistent_, f % plan_.slots, 1);
+                if (dir * f >= dir * cursor.nextRetire)
+                    zeroAcc(rec, persistent_, f % plan_.slots, 1);
             for (; dir * cursor.nextConvert <= dir * newest; cursor.nextConvert += dir)
                 recordConvert(rec, ctx, persistent_, sources, cursor.nextConvert);
             rec.barrier();
