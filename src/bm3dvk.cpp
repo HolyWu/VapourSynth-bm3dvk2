@@ -2120,9 +2120,11 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
     rec.barrier();
-    // The cursor is committed only once the submission is made, so a failure leaves a restart for the next call. A request for the frame just before the one a
-    // forward cursor served last steps back; the second such step in a row restarts backward, as a previewer stepping back requests.
-    const bool stepBack = cursor_.valid && !cursor_.backward && n == cursor_.nextRetire - 2;
+    // The cursor is committed only once the submission is made, so a failure leaves a restart for the next call. A request for one of the radius * 2 + 1
+    // frames before the one a forward cursor served last steps back, the strides a backward cursor continues over; the second such step in a row restarts
+    // backward, as a previewer stepping or paging back requests.
+    const int behind = cursor_.nextRetire - 1 - n;
+    const bool stepBack = cursor_.valid && !cursor_.backward && behind >= 1 && behind <= radius * 2 + 1;
     TemporalCursor cursor = canContinue(n) ? cursor_ : restart(rec, n, stepBack && cursor_.steppedBack);
     cursor.steppedBack = stepBack;
     cursor_.valid = false;
