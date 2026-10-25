@@ -1832,12 +1832,15 @@ void aggregate(uint k, float numWeight, float denWeight) {
 #endif
 }
 
+// The prescale and the weight factor high and low parts of group sizes 1 to GROUP (see buildPreamble).
+const uint gainTable[GROUP * 3] = uint[](GAIN_TABLE);
+
 void filterGroup(uint slot) {
     const uint k = counts.counts[slot];
     groupSlot = slot;
 
     // Prescaling by the inverse square root of the transform gain keeps half precision spectra in range.
-    const float scale = inversesqrt(float(k * BLOCK * BLOCK * 8));
+    const float scale = uintBitsToFloat(gainTable[k * 3 - 3]);
     gather(k, scale);
     SYNC();
 #if BLOCK <= MAX_CODELET
@@ -1880,7 +1883,8 @@ void filterGroup(uint slot) {
     colPass(k, 1, true, 0, BUF_T);
 #endif
     SYNC();
-    aggregate(k, denWeight * scale, denWeight);
+    // Fused, the two parts round the weight once, as the division by the gain would.
+    aggregate(k, fma(denWeight, uintBitsToFloat(gainTable[k * 3 - 2]), denWeight * uintBitsToFloat(gainTable[k * 3 - 1])), denWeight);
     SYNC();
 }
 

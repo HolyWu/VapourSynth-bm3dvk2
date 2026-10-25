@@ -1044,6 +1044,17 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
     std::string coef;
     for (int i = 0; i < plan.planes * 4; ++i)
         coef += (i ? ", " : "") + floatBits(plan.coef[i]);
+    // Per group size: the prescale of the transform gain n and the weight factor 1 / (scale * n) as the sum of two floats, rounded here because the device's
+    // inversesqrt and division would bias all estimates of a group size by the same factor. Bit patterns keep the table a constant expression.
+    const auto bits = [](float v) { return std::to_string(std::bit_cast<uint32_t>(v)) + "u"; };
+    std::string gain;
+    for (int k = 1; k <= p.groupSize; ++k) {
+        const double n = 8.0 * k * p.blockSize * p.blockSize;
+        const auto scale = static_cast<float>(1.0 / std::sqrt(n));
+        const double weight = 1.0 / (scale * n);
+        const auto hi = static_cast<float>(weight);
+        gain += (k > 1 ? ", " : "") + bits(scale) + ", " + bits(hi) + ", " + bits(static_cast<float>(weight - hi));
+    }
     std::string activePlanes;
     for (const int plane : plan.activePlanes)
         activePlanes += (activePlanes.empty() ? "" : ", ") + std::to_string(plane);
@@ -1110,6 +1121,7 @@ std::string buildPreamble(const Params& p, const Plan& plan, const Gpu& gpu) {
         {"Z_TABLE_BASE", std::to_string(p.blockSize > dct::maxCodeletSize ? p.blockSize * 4 : 0)},
         {"MAX_CODELET", std::to_string(dct::maxCodeletSize)},
         {"COEF_TABLE", coef},
+        {"GAIN_TABLE", gain},
         {"FLT_EPSILON", floatBits(std::numeric_limits<float>::epsilon())},
         {"FLT_MAX", floatBits(std::numeric_limits<float>::max())},
         {"DCT2_BLOCK", "dct2_" + std::to_string(p.blockSize)},
