@@ -938,7 +938,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
             else if (plan.bmChunk > bmItemRows)
                 plan.bmChunk = std::max(plan.bmChunk / 2 / bmItemRows * bmItemRows, bmItemRows);
             else
-                fail("block matching does not fit into the device's shared memory");
+                fail("block matching does not fit into the device's shared memory, decrease \"group_size\", \"ps_num\" or \"block_size\"");
         }
     }
     plan.bmShared = bmShared(plan.bmWindows, plan.bmSubgroups, plan.bmChunk, plan.bmSingleChunk);

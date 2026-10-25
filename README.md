@@ -21,7 +21,7 @@ bm3dvk2.BM3D(vnode clip[, vnode ref=None, str profile="fast", float[] sigma=[10,
 
 - radius: Temporal radius, valid range [0, 16]. 0 denoises spatially (BM3D), greater values denoise temporally over `radius * 2 + 1` frames (V-BM3D). Defaults to the radius of the profile, and the defaults of the other parameters follow the selected mode.
 
-- block_size: Size of a block, valid range [1, 64]. It must not exceed the width or height of `clip`, which also applies to the profile default. Above 41 it needs more than the 16 KB of compute shared memory that Vulkan guarantees (`maxComputeSharedMemorySize`).
+- block_size: Size of a block, valid range [1, 64]. It must not exceed the width or height of `clip`, which also applies to the profile default. Above 41 it needs more than the 16 KB of compute shared memory that Vulkan guarantees (`maxComputeSharedMemorySize`), and temporal denoising can need more below that too, with `group_size` near 256 or a large `ps_num` (e.g. `group_size=256` from `block_size=38`).
 
 - block_step: Step between reference blocks, valid range [1, block_size].
 
