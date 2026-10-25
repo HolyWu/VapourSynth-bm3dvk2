@@ -1017,7 +1017,7 @@ uint commitRest(uint total) {
 // Keeps the GROUP - 1 smallest (distance, key) entries of the rest set and the frame list in listD/K, the key of a match being frame * GROUP + its rank in its
 // frame's list: as a frame lists its matches by (distance, position), equal distances order by frame and position like the CPU implementation. Both sets ascend
 // by (distance, key) and hold unique keys, so every element finds its rank directly instead of in selection rounds: its index in its own set plus the elements
-// of the other set preceding it.
+// of the other set preceding it, found by binary search.
 uint mergeRest(uint nr, uint nl, uint frame) {
     const uint total = nr + nl;
     for (uint i = lane; i < total; i += SG) {
@@ -1025,9 +1025,14 @@ uint mergeRest(uint nr, uint nl, uint frame) {
         const float d = fromRest ? restD[sg][i] : listD[sg][i - nr];
         const uint c = fromRest ? restC[sg][i] : frame * GROUP + i - nr;
         uint preceding = 0;
-        while (preceding < (fromRest ? nl : nr) &&
-               keyLess(fromRest ? listD[sg][preceding] : restD[sg][preceding], fromRest ? frame * GROUP + preceding : restC[sg][preceding], d, c))
-            ++preceding;
+        uint end = fromRest ? nl : nr;
+        while (preceding < end) {
+            const uint mid = (preceding + end) / 2;
+            if (keyLess(fromRest ? listD[sg][mid] : restD[sg][mid], fromRest ? frame * GROUP + mid : restC[sg][mid], d, c))
+                preceding = mid + 1;
+            else
+                end = mid;
+        }
         const uint rank = (fromRest ? i : i - nr) + preceding;
         if (rank < GROUP - 1) {
             STAGE(rank) = floatBitsToUint(d);
