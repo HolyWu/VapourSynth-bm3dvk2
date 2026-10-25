@@ -281,8 +281,8 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
         fail("the device lacks subgroup arithmetic, ballot or shuffle operations");
 
     const VkPhysicalDeviceLimits& limits = props.properties.limits;
-    // BM3DVK_FALLBACK, set as BM3DVK_PROFILE is, takes the paths of a device without float atomics or half precision math and off the NVIDIA driver, so that
-    // tests can check them on any device.
+    // BM3DVK_FALLBACK, set as BM3DVK_PROFILE is, takes the paths of a device without float atomics or half precision math, off the NVIDIA driver and with a
+    // small workgroup count, so that tests can check them on any device.
     const bool fallback = envFlag("BM3DVK_FALLBACK");
     gpu.nvidiaDriver = props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY && !fallback;
     // Layered drivers forwarding to llvmpipe (Venus, gfxstream) report their own driver ID but keep its name in the device name.
@@ -324,7 +324,8 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     if (gpu.maxWorkgroup < static_cast<int>(gpu.subgroupSize))
         fail("the device's compute workgroups cannot hold a subgroup");
     gpu.maxSharedMemory = limits.maxComputeSharedMemorySize;
-    gpu.maxGroupCountX = static_cast<int>(std::min<uint32_t>(limits.maxComputeWorkGroupCount[0], std::numeric_limits<int>::max()));
+    // 64 workgroups make the kernels stride over their grids at test sizes, as devices limited to 65535 (Adreno, Mali) do on large frames.
+    gpu.maxGroupCountX = fallback ? 64 : static_cast<int>(std::min<uint32_t>(limits.maxComputeWorkGroupCount[0], std::numeric_limits<int>::max()));
     // Working buffers are created at the size they are bound with.
     gpu.maxStorageRange = static_cast<int64_t>(std::min<uint64_t>(limits.maxStorageBufferRange, props13.maxBufferSize));
     gpu.maxStorageBuffers = limits.maxPerStageDescriptorStorageBuffers;
