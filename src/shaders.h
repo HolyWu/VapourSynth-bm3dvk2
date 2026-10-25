@@ -727,6 +727,10 @@ void popHead(float d1, float d2, uint key1, inout uint pops, inout float head, i
 bool headTied(uint pops, float d0, float d1, float d2) {
     return pops > 2 || (pops > 0 && (pops == 1 ? d0 : d1) == d2);
 }
+
+bool anyLane(bool b) {
+    return subgroupBallot(b) != uvec4(0);
+}
 #endif
 
 #if SINGLE_CHUNK && GROUP * 2 <= SG
@@ -804,9 +808,7 @@ bool selectCached(uint first, uint nc, uint k, bool full, uint nr, out uint n) {
         }
     }
     syncSubgroup();
-    if (subgroupBallotBitCount(subgroupBallot(headTied(pops, d0, d1, d2))) != 0)
-        return false;
-    return true;
+    return !anyLane(headTied(pops, d0, d1, d2));
 }
 #endif
 
@@ -1048,10 +1050,6 @@ void saveCenters(uint n, uint side) {
 #define HALF_MASK ((1u << HSG) - 1u)
 // The list of the forward side while both sides select at once (see selectSides): distances, then keys.
 #define SIDE_LIST (CHUNK - GROUP * 2)
-
-bool anyLane(bool b) {
-    return subgroupBallot(b) != uvec4(0);
-}
 
 // selectCached for both sides of a step at once, side s in lanes [s * HSG, (s + 1) * HSG) of a 32-lane subgroup over its candidates from candD[s == 0 ? 0 :
 // first1] on, the backward side's list going to listD/K and the forward side's to candD from SIDE_LIST on. The rounds of one side serve both, and the forward
