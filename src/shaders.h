@@ -1192,7 +1192,8 @@ uint predictiveStep(bool back, bool fwd, uint k, uint nr, out bool deferred) {
     predictiveDistances(0, (windows0 + windows1) * PS_SLOTS, frameOffset(pc.cur - k), ivec2(-1));
     syncSubgroup();
 #if HALF_SELECT
-    // Both sides select at once where their candidates leave room for the forward side's list, unless a side needs the general merge (rare).
+    // Both sides select at once where their candidates leave room for the forward side's list, unless a side needs the general merge: rare at the np/vn
+    // defaults, but for a quarter of the reference blocks or more at a predictive pitch of 16 (ps_range 7) and 7-45% of them with groups of 32-64.
     uint n;
     if (back && windows1 > 0u && (windows0 + windows1) * PS_SLOTS <= SIDE_LIST &&
         selectSides(windows0 * PS_SLOTS, windows0 * PS_SLOTS, windows1 * PS_SLOTS, nr, n)) {
