@@ -324,7 +324,7 @@ Gpu queryGpu(VSCore* core, const VSAPI& vsapi) {
     if (gpu.maxWorkgroup < static_cast<int>(gpu.subgroupSize))
         fail("the device's compute workgroups cannot hold a subgroup");
     gpu.maxSharedMemory = limits.maxComputeSharedMemorySize;
-    // 64 workgroups make the kernels stride over their grids at test sizes, as devices limited to 65535 (Adreno, Mali) do on large frames.
+    // 64 workgroups make block matching and the filter stride over their grids at test sizes, as devices limited to 65535 (Adreno, Mali) do on large frames.
     gpu.maxGroupCountX = fallback ? 64 : static_cast<int>(std::min<uint32_t>(limits.maxComputeWorkGroupCount[0], std::numeric_limits<int>::max()));
     // Working buffers are created at the size they are bound with.
     gpu.maxStorageRange = static_cast<int64_t>(std::min<uint64_t>(limits.maxStorageBufferRange, props13.maxBufferSize));
