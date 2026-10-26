@@ -828,16 +828,16 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     }
     // Row-major slots of a lane lie SG apart: SG / pitch rows down and SG % pitch columns across, or a row further and pitch - SG % pitch columns back, the
     // nearer at the squared distance laneSpacing. Diagonal neighbours there would have correlated distances (see blockMatch).
-    const auto laneSpacing = [sg](int64_t pitch) {
-        const int64_t down = sg / pitch;
-        const int64_t across = sg % pitch;
+    const auto laneSpacing = [](int64_t pitch, int64_t lanes) {
+        const int64_t down = lanes / pitch;
+        const int64_t across = lanes % pitch;
         return std::min(down * down + across * across, (down + 1) * (down + 1) + (pitch - across) * (pitch - across));
     };
     // A spatial search wider than a subgroup is keyed by slot (see selectSlots), its rows padded until a lane's slots lie apart; narrower ones, with few
     // candidates, run faster on the general merge (measured). No pitch puts a lane's slots further apart than SG columns in a row.
     plan.bmSlotKeys = !plan.noMatching && p.radius == 0 && plan.fullCols > sg;
     plan.fullPitch = plan.fullCols;
-    while (plan.bmSlotKeys && laneSpacing(plan.fullPitch) < std::min(bmSpatialLaneSpacing, sg * sg))
+    while (plan.bmSlotKeys && laneSpacing(plan.fullPitch, sg) < std::min(bmSpatialLaneSpacing, sg * sg))
         ++plan.fullPitch;
     // A single chunk holds the candidates of every search without item padding, and stages the merges of the rest set in its first 4 * GROUP words; shared
     // memory bounds how many workgroups an SM runs, so every word counts.
@@ -879,7 +879,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
                                     (p.radius > 0 ? list * 4 + int64_t{p.psNum} * 2 * sizeof(uint32_t) : 0);
         return perSubgroup * subgroups + (plan.bmRefInRegs ? 1 : 2) * 12;
     };
-    plan.psRowMajor = laneSpacing(plan.psCols) > 2;
+    plan.psRowMajor = laneSpacing(plan.psCols, sg) > 2;
     // Distances in correlation form take the reference block offset by its mean, which pays off for blocks from bmCorrelationMinBlock on, read from shared
     // memory. Smaller blocks keep plain differences wherever their reference lives: one in registers, which the compiler reads again from the window instead,
     // loses with it (measured). The distance of a duplicate block is then a rounding residual, of up to 2 * FLT_EPSILON * n * (n + BLOCK) for n samples in [0,
@@ -900,7 +900,7 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
     }
     // A search in several chunks takes the general merge.
     plan.bmSlotKeys = plan.bmSlotKeys && plan.bmSingleChunk;
-    plan.fullRowMajor = plan.bmSlotKeys || laneSpacing(plan.fullPitch) > 2;
+    plan.fullRowMajor = plan.bmSlotKeys || laneSpacing(plan.fullPitch, sg) > 2;
     if (plan.bmSingleChunk) {
         plan.bmChunk = static_cast<int>(exactCandidates);
         while (bmShared(plan.bmWindows, plan.bmSubgroups, plan.bmChunk, true) > gpu.maxSharedMemory)
@@ -921,6 +921,8 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
             // window per side leaves room for it. Plans of smaller chunks lose by it: their kernels get too few registers for it and spill (measured).
             plan.halfSelect = plan.psPair && sg == 32 && gpu.clusteredOps && plan.bmChunk >= std::max(p.groupSize * 6, bmHalfSelectMinChunk) &&
                               2 * psSlots <= plan.bmChunk - 2 * p.groupSize;
+            // selectSides takes the slots of a half-lane SG / 2 apart.
+            plan.psRowMajor = plan.psRowMajor && (!plan.halfSelect || laneSpacing(plan.psCols, sg / 2) > 2);
         }
         std::tie(plan.bmFullRows, plan.bmFullCols) =
             itemShape(plan.fullCols, plan.fullRows, 1, p.bmStep, p.blockSize, sg, bmFullLoadCost, plan.bmCorrelation, bmItemRowsMax, bmItemColsMax);
