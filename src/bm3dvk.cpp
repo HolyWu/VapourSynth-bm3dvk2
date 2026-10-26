@@ -1192,8 +1192,11 @@ std::string zLineFunction(int groupSize, bool scalar) {
     return scalar ? scalarCodelet(s) : s;
 }
 
-std::string filterSource(const Params& p, const std::string& preamble, bool scalarZ) {
+std::string filterSource(const Params& p, const std::string& preamble, bool scalarZ, bool globalGroup) {
     std::string s = preamble;
+    // A group in memory is coherent within its workgroup only (see Scratch in shaders.h), which takes the Vulkan memory model the core requires.
+    if (globalGroup)
+        s.insert(s.find('\n') + 1, "#extension GL_KHR_memory_scope_semantics : require\n#pragma use_vulkan_memory_model\n");
     s += shader::common;
     const int maxCodelet = std::min(p.groupSize, dct::maxCodeletSize);
     for (int n = 1; n <= std::max(maxCodelet, p.blockSize <= dct::maxCodeletSize ? p.blockSize : 0); ++n) {
@@ -1796,8 +1799,8 @@ public:
         blockMatch_ = createKernel(
             gpu_, core, {"BM3D blockMatch", kernelSource(shader::blockMatch), blockMatchLayout, sizeof(BlockMatchPush), true, modes, plan_.bmShared});
         filter_ = createKernel(gpu_, core,
-                               {"BM3D filter", filterSource(params_, preamble, plan_.zScalar), filterLayout(params_, plan_), sizeof(FilterPush), true, modes,
-                                plan_.filterShared});
+                               {"BM3D filter", filterSource(params_, preamble, plan_.zScalar, plan_.globalGroup), filterLayout(params_, plan_),
+                                sizeof(FilterPush), true, modes, plan_.filterShared});
         normalize_ = createKernel(gpu_, core,
                                   {"BM3D normalize", kernelSource(shader::normalize), imageLayout, sizeof(NormalizePush), false, modes, plan_.normalizeShared});
         for (const Kernel* kernel : {&convert_, &blockMatch_, &filter_, &normalize_})

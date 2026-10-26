@@ -1351,7 +1351,7 @@ layout(set = 0, binding = 2, std430) readonly buffer Matches { MATCH_T entries[]
 layout(set = 0, binding = 3, std430) readonly buffer Counts { uint counts[]; } counts;
 layout(set = 0, binding = 4, std430) buffer Acc { ACC_T data[]; } acc[PLANES];
 #if GLOBAL_GROUP
-layout(set = 0, binding = 5, std430) coherent buffer Scratch { T data[]; } scratch;
+layout(set = 0, binding = 5, std430) workgroupcoherent buffer Scratch { T data[]; } scratch;
 #endif
 #if PINGPONG
 layout(set = 0, binding = 6, std430) readonly buffer CosTable { float data[]; } cosTable;
@@ -1387,8 +1387,8 @@ uint swizzled(uint z, uint i) {
 #if GLOBAL_GROUP
 uint groupBase;
 #define G(i) scratch.data[groupBase + (i)]
-// The fences around barrier() release this invocation's scratch writes and acquire those of the others.
-#define SYNC() memoryBarrierBuffer(); barrier(); memoryBarrierBuffer()
+// Scratch is coherent within the workgroup only, which keeps it in L1. The barrier releases this invocation's scratch writes and acquires those of the others.
+#define SYNC() controlBarrier(gl_ScopeWorkgroup, gl_ScopeWorkgroup, gl_StorageSemanticsBuffer | gl_StorageSemanticsShared, gl_SemanticsAcquireRelease)
 #else
 shared T groupData[BUF_T * (PINGPONG + 1)];
 #define G(i) groupData[i]
