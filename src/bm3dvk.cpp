@@ -2137,9 +2137,9 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
             cursor.nextRef += dir;
             const auto [firstFrame, lastFrame] = frameSpan(m, radius);
             const int newest = cursor.backward ? firstFrame : lastFrame;
-            // Slots are cleared as their frames come in, since after a backward restart frames past the first complete one take estimates and are never
-            // retired; a restart's frames before its first complete one are never normalized and stay uncleared. The fills go ahead of the converts: one
-            // timed right after a dispatch can measure a negative time.
+            // A slot is cleared as its frame comes in rather than as the frame before it retires: a restart brings in frames before its first complete one
+            // in the cursor's direction, which are never normalized (backward, they take estimates), so their slots stay uncleared until the next frame in
+            // them comes in. The fills go ahead of the converts: one timed right after a dispatch can measure a negative time.
             for (int f = cursor.nextConvert; dir * f <= dir * newest; f += dir)
                 if (dir * f >= dir * cursor.nextRetire)
                     zeroAcc(rec, persistent_, f % plan_.slots, 1);
@@ -2174,7 +2174,8 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
     ctx.submit();
     cursor_ = cursor;
 
-    // Nothing may throw past the submission, whose ring slots are cleared: merging moves the nodes allocated above, for frames emitted_ does not hold yet.
+    // Nothing may throw past the submission, after which the cursor is past the frames emitted ahead: merging moves the nodes allocated above, for frames
+    // emitted_ does not hold yet.
     emitted_.merge(ahead);
     endRequest(n);
     return result;
