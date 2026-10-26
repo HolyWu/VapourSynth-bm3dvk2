@@ -1903,7 +1903,7 @@ private:
     void recordConvert(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, const Sources& sources, int frame) const;
     void recordStep(const Recorder& rec, const WorkBuffers& work, const Step& step) const;
     void recordNormalize(const Recorder& rec, const ExecContext& ctx, const WorkBuffers& work, VSFrame* dst, int frame) const;
-    void zeroAcc(const Recorder& rec, const WorkBuffers& work, int firstSlot, int slots) const;
+    void zeroAcc(const Recorder& rec, const WorkBuffers& work, int slot) const;
     OutFramePtr newFrame(const VSFrame* propSrc, VSCore* core) const;
     bool canContinue(int n) const;
     TemporalCursor restart(int n, bool backward) const;
@@ -2056,10 +2056,10 @@ void Filter::recordNormalize(const Recorder& rec, const ExecContext& ctx, const 
     rec.dispatch(normalize_, bindings, push, {divCeil(plan_.width, imageTile), divCeil(plan_.height, imageTile)});
 }
 
-// Clears accumulator slots [firstSlot, firstSlot + slots) of the filtered planes.
-void Filter::zeroAcc(const Recorder& rec, const WorkBuffers& work, int firstSlot, int slots) const {
+// Clears an accumulator slot of the filtered planes.
+void Filter::zeroAcc(const Recorder& rec, const WorkBuffers& work, int slot) const {
     for (const int plane : plan_.activePlanes)
-        rec.zero(work.acc[plane], accSlotBytes(plan_) * firstSlot, accSlotBytes(plan_) * slots);
+        rec.zero(work.acc[plane], accSlotBytes(plan_) * slot, accSlotBytes(plan_));
 }
 
 OutFramePtr Filter::newFrame(const VSFrame* propSrc, VSCore* core) const {
@@ -2073,7 +2073,7 @@ OutFramePtr Filter::spatialFrame(int n, VSFrameContext* frameCtx, VSCore* core) 
     ExecContext ctx{*gpu_.vkapi, pool_.get()};
     const WorkBuffers work = createWorkBuffers([&](int64_t bytes) { return ctx.retain(createBuffer(gpu_, core, bytes)); });
     const Recorder rec{gpu_, ctx.commandBuffer(), timer_.get()};
-    zeroAcc(rec, work, 0, 1);
+    zeroAcc(rec, work, 0);
     recordConvert(rec, ctx, work, sources, n);
     rec.barrier();
     recordStep(rec, work, {});
@@ -2142,7 +2142,7 @@ FramePtr Filter::temporalFrame(int n, VSFrameContext* frameCtx, VSCore* core) {
             // them comes in. The fills go ahead of the converts: one timed right after a dispatch can measure a negative time.
             for (int f = cursor.nextConvert; dir * f <= dir * newest; f += dir)
                 if (dir * f >= dir * cursor.nextRetire)
-                    zeroAcc(rec, persistent_, f % plan_.slots, 1);
+                    zeroAcc(rec, persistent_, f % plan_.slots);
             for (; dir * cursor.nextConvert <= dir * newest; cursor.nextConvert += dir)
                 recordConvert(rec, ctx, persistent_, sources, cursor.nextConvert);
             rec.barrier();
