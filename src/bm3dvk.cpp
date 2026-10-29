@@ -826,8 +826,9 @@ Plan makePlan(const Params& p, const VSVideoInfo& vi, const Gpu& gpu) {
         plan.psCols = windowSide(p.psRange, p.psStep, vi.width, p.blockSize);
         plan.psRows = windowSide(p.psRange, p.psStep, vi.height, p.blockSize);
     }
-    // Row-major slots of a lane lie SG apart: SG / pitch rows down and SG % pitch columns across, or a row further and pitch - SG % pitch columns back, the
-    // nearer at the squared distance laneSpacing. Diagonal neighbours there would have correlated distances (see blockMatch).
+    // Row-major slots of a lane lie lanes apart (SG, or SG / 2 for a half-lane): lanes / pitch rows down and lanes % pitch columns across, or a row further
+    // and pitch - lanes % pitch columns back, the nearer at the squared distance laneSpacing. Diagonal neighbours there would have correlated distances (see
+    // blockMatch).
     const auto laneSpacing = [](int64_t pitch, int64_t lanes) {
         const int64_t down = lanes / pitch;
         const int64_t across = lanes % pitch;

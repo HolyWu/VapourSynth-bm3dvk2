@@ -178,7 +178,7 @@ uint lane;
 // PS_ROW_MAJOR), whose correlated distances would keep winning the selection rounds. Such a window keeps the item order, the items of its last item row holding
 // just the rows left: candidate (w, row0 + k, col) takes slot (w * rows + row0) * cols + col * n + k, n being the rows of its item. A spatial search keyed by
 // slot (SLOT_KEYS) instead pads its rows to FULL_PITCH slots, the padding INF, so that its slots are row-major and lie apart for a lane: they then ascend with
-// positions and serve as keys (see selectSlots).
+// positions and serve as keys (see selectSlots). Under HALF_SELECT, the slots of a half-lane, SG / 2 apart, decide PS_ROW_MAJOR as well (see selectSides).
 #if SINGLE_CHUNK
 #define SEARCH_SLOTS(full) ((full) ? FULL_SLOTS : PS_SLOTS)
 #define ITEM_END(base, count, ny, slots, items) ((slots) == (items) ? (count) : (count) / (slots) * (items))
