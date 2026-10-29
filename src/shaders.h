@@ -1122,14 +1122,19 @@ uint mergeRestSides(uint nr, uint n0, uint f0, uint n1, uint f1) {
             const uint size = t == 0u ? nr : t == 1u ? n0 : n1;
             if (t == s)
                 continue;
-            for (uint e = 0; e < size; ++e) {
+            uint preceding = 0;
+            uint end = size;
+            while (preceding < end) {
+                const uint mid = (preceding + end) / 2;
                 float de;
                 uint ce;
-                sideEntry(t, e, f0, f1, de, ce);
-                if (!keyLess(de, ce, d, c))
-                    break;
-                ++rank;
+                sideEntry(t, mid, f0, f1, de, ce);
+                if (keyLess(de, ce, d, c))
+                    preceding = mid + 1;
+                else
+                    end = mid;
             }
+            rank += preceding;
         }
         if (rank < GROUP - 1) {
             STAGE(rank) = floatBitsToUint(d);
